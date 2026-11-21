@@ -1,8 +1,7 @@
 /*
- * Helm UI for Schwung
+ * Vial UI for Schwung
  *
  * Uses shared sound generator UI base for consistent preset browsing.
- * Parameter editing via shadow UI hierarchy when in chain context.
  *
  * GPL-3.0 License
  */
@@ -10,16 +9,16 @@
 /* Shared utilities - absolute path for module location independence */
 import { createSoundGeneratorUI } from '/data/UserData/schwung/shared/sound_generator_ui.mjs';
 
-/* Create the UI with Helm-specific customizations */
+/* Create the UI with Vial customizations */
 const ui = createSoundGeneratorUI({
-    moduleName: 'Helm',
+    moduleName: 'Vial',
 
     onInit: (state) => {
-        /* Any Helm-specific initialization */
+        /* Vial-specific initialization */
     },
 
     onTick: (state) => {
-        /* Any Helm-specific per-tick updates */
+        /* Vial-specific per-tick updates */
     },
 
     onPresetChange: (preset) => {
@@ -27,7 +26,7 @@ const ui = createSoundGeneratorUI({
         host_module_set_param('all_notes_off', '1');
     },
 
-    showPolyphony: true,
+    showPolyphony: false,
     showOctave: true,
 });
 

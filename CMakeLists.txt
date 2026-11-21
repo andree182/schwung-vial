@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.10)
-project(helm-move-plugin CXX C)
+project(vial-move-plugin CXX C)
 
 # Set C++ standard
 set(CMAKE_CXX_STANDARD 17)
@@ -9,6 +9,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 add_definitions(
     -DLINUX=1
     -DNDEBUG=1
+    -DHEADLESS=1
     -DJUCE_HEADLESS=1
     -DJUCE_GUI_SUPPORT=0
     -DJUCE_AUDIOPROCESSOR_NO_GUI=1
@@ -21,68 +22,83 @@ add_definitions(
     -DJucePlugin_Build_RTAS=0
     -DJucePlugin_Build_AAX=0
     -DJUCE_USE_CURL=0
+    -DJUCE_LOAD_CURL_SYMBOLS_LAZILY=0
     -DJUCE_WEB_BROWSER=0
 )
+
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64" OR CMAKE_SYSTEM_PROCESSOR MATCHES "arm64")
+    add_definitions(-D__ARM_NEON=1 -D__ARM_NEON__=1)
+endif()
 
 # Header search paths
 include_directories(
     src/dsp
-    src/dsp/helm/JuceLibraryCode
-    src/dsp/helm/third_party/JUCE/modules
-    src/dsp/helm/mopo/src
-    src/dsp/helm/src/synthesis
-    src/dsp/helm/src/common
-    src/dsp/helm/concurrentqueue
+    src/dsp/JuceLibraryCode
+    src/dsp/vial/JUCE/modules
+    src/dsp/vial/src
+    src/dsp/vial/src/common
+    src/dsp/vial/src/common/wavetable
+    src/dsp/vial/src/interface/look_and_feel
+    src/dsp/vial/src/synthesis
+    src/dsp/vial/src/synthesis/effects
+    src/dsp/vial/src/synthesis/filters
+    src/dsp/vial/src/synthesis/framework
+    src/dsp/vial/src/synthesis/lookups
+    src/dsp/vial/src/synthesis/modulators
+    src/dsp/vial/src/synthesis/modules
+    src/dsp/vial/src/synthesis/producers
+    src/dsp/vial/src/synthesis/synth_engine
+    src/dsp/vial/src/synthesis/utilities
+    src/dsp/vial/third_party
+    src/dsp/vial/third_party/concurrentqueue
+    src/dsp/vial/third_party/json
+    src/dsp/vial/third_party/kissfft
 )
 
-# Find sources
-file(GLOB MOPO_SOURCES "src/dsp/helm/mopo/src/*.cpp")
-file(GLOB SYNTHESIS_SOURCES "src/dsp/helm/src/synthesis/*.cpp")
-
+# JUCE module sources
 set(JUCE_SOURCES
-    src/dsp/helm/third_party/JUCE/modules/juce_core/juce_core.cpp
-    src/dsp/helm/third_party/JUCE/modules/juce_core/juce_core_CompilationTime.cpp
-    src/dsp/helm/third_party/JUCE/modules/juce_events/juce_events.cpp
-    src/dsp/helm/third_party/JUCE/modules/juce_audio_basics/juce_audio_basics.cpp
-    src/dsp/helm/third_party/JUCE/modules/juce_data_structures/juce_data_structures.cpp
+    src/dsp/vial/JUCE/modules/juce_core/juce_core.cpp
+    src/dsp/vial/JUCE/modules/juce_events/juce_events.cpp
+    src/dsp/vial/JUCE/modules/juce_audio_basics/juce_audio_basics.cpp
+    src/dsp/vial/JUCE/modules/juce_audio_formats/juce_audio_formats.cpp
+    src/dsp/vial/JUCE/modules/juce_data_structures/juce_data_structures.cpp
 )
 
-set(HELM_COMMON_SOURCES
-    src/dsp/helm/src/common/helm_common.cpp
-    src/dsp/helm/src/common/load_save.cpp
-    src/dsp/helm/src/common/midi_manager.cpp
-    src/dsp/helm/src/common/synth_base.cpp
+# Vial synthesis engine sources (unity build)
+set(VIAL_SOURCES
+    src/dsp/vial/src/unity_build/common.cpp
+    src/dsp/vial/src/unity_build/synthesis.cpp
 )
 
+# Move Anything DSP Plugin wrapper
 set(PLUGIN_SOURCES
-    src/dsp/helm_plugin.cpp
+    src/dsp/vial_plugin.cpp
 )
 
 # Combine all source files
 set(ALL_SOURCES
-    ${MOPO_SOURCES}
-    ${SYNTHESIS_SOURCES}
     ${JUCE_SOURCES}
-    ${HELM_COMMON_SOURCES}
+    ${VIAL_SOURCES}
     ${PLUGIN_SOURCES}
 )
 
 # Build shared library (dsp.so)
-add_library(helm-move-plugin SHARED ${ALL_SOURCES})
+add_library(vial-move-plugin SHARED ${ALL_SOURCES})
 
 # Target properties to output dsp.so directly
-set_target_properties(helm-move-plugin PROPERTIES
+set_target_properties(vial-move-plugin PROPERTIES
     PREFIX ""
     SUFFIX ".so"
     OUTPUT_NAME "dsp"
 )
 
 # Link standard libraries
-target_link_libraries(helm-move-plugin PRIVATE
+target_link_libraries(vial-move-plugin PRIVATE
     pthread
     rt
     dl
 )
 
-# Link libstdc++ and libgcc statically to avoid GLIBCXX version issues on the Move
-target_link_options(helm-move-plugin PRIVATE "-static-libstdc++" "-static-libgcc")
+# Link libstdc++ and libgcc statically to avoid GLIBCXX version issues on the Move,
+# and ensure no unresolved symbols.
+target_link_options(vial-move-plugin PRIVATE "-static-libstdc++" "-static-libgcc" "-Wl,--no-undefined")

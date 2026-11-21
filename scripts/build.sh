@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Build Helm module for Move Anything (ARM64)
+# Build Vial module for Move Anything (ARM64)
 #
-# Uses CMake to build the Helm core engine and plugin wrapper.
+# Uses CMake to build the Vial core engine and plugin wrapper.
 # Automatically uses Docker for cross-compilation if needed.
 # Set CROSS_PREFIX to skip Docker (e.g., for native ARM builds).
 set -e
@@ -12,7 +12,7 @@ IMAGE_NAME="move-anything-helm-builder"
 
 # Check if we need Docker
 if [ -z "$CROSS_PREFIX" ] && [ ! -f "/.dockerenv" ]; then
-    echo "=== Helm Module Build (via Docker) ==="
+    echo "=== Vial Module Build (via Docker) ==="
     echo ""
 
     # Build Docker image if needed
@@ -39,7 +39,7 @@ fi
 # === Actual build (runs in Docker or with cross-compiler) ===
 cd "$REPO_ROOT"
 
-echo "=== Building Helm Module ==="
+echo "=== Building Vial Module ==="
 
 # Create build directory
 mkdir -p build
@@ -54,39 +54,41 @@ cmake -B build \
 
 # Build
 echo "Building (this may take a while)..."
-cmake --build build --target helm-move-plugin -j$(nproc) 2>&1
+cmake --build build --target vial-move-plugin -j$(nproc) 2>&1
 
 # Package
 echo "Packaging..."
-mkdir -p dist/helm
+mkdir -p dist/vial
 
 # Copy files to dist
-cat src/module.json > dist/helm/module.json
-[ -f src/help.json ] && cat src/help.json > dist/helm/help.json
-[ -f LICENSE ] && cat LICENSE > dist/helm/LICENSE
-[ -f NOTICE ]  && cat NOTICE  > dist/helm/NOTICE
-cat src/ui.js > dist/helm/ui.js
-cat build/dsp.so > dist/helm/dsp.so
-chmod +x dist/helm/dsp.so
+cat src/module.json > dist/vial/module.json
+[ -f src/help.json ] && cat src/help.json > dist/vial/help.json
+[ -f LICENSE ] && cat LICENSE > dist/vial/LICENSE
+[ -f NOTICE ]  && cat NOTICE  > dist/vial/NOTICE
+cat src/ui.js > dist/vial/ui.js
+cat build/dsp.so > dist/vial/dsp.so
+chmod +x dist/vial/dsp.so
 
-# Copy Helm factory presets
+# Copy patches (both vial-data and backward-compat helm-data)
 if [ -d "src/dsp/helm/patches" ]; then
-    echo "Copying Helm factory patches..."
-    mkdir -p dist/helm/helm-data/patches
-    cp -r "src/dsp/helm/patches/Factory Presets" dist/helm/helm-data/patches/
-    mkdir -p "dist/helm/helm-data/patches/Factory Presets/Keys"
-    cp "data/Move Organ.helm" "dist/helm/helm-data/patches/Factory Presets/Keys/"
+    echo "Copying factory patches..."
+    mkdir -p dist/vial/vial-data/patches
+    cp -r "src/dsp/helm/patches/Factory Presets" dist/vial/vial-data/patches/
+    if [ -f "data/Move Organ.helm" ]; then
+        mkdir -p "dist/vial/vial-data/patches/Factory Presets/Keys"
+        cp "data/Move Organ.helm" "dist/vial/vial-data/patches/Factory Presets/Keys/"
+    fi
 fi
 
 # Create tarball for release
 cd dist
-tar -czvf helm-module.tar.gz helm/
+tar -czvf vial-module.tar.gz vial/
 cd ..
 
 echo ""
 echo "=== Build Complete ==="
-echo "Output: dist/helm/"
-echo "Tarball: dist/helm-module.tar.gz"
+echo "Output: dist/vial/"
+echo "Tarball: dist/vial-module.tar.gz"
 echo ""
 echo "To install on Move:"
 echo "  ./scripts/install.sh"

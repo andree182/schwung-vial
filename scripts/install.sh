@@ -1,5 +1,5 @@
 #!/bin/bash
-# Install Helm module to Move
+# Install Vial module to Move
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -7,17 +7,17 @@ REPO_ROOT="$(dirname "$SCRIPT_DIR")"
 
 cd "$REPO_ROOT"
 
-if [ ! -d "dist/helm" ]; then
-    echo "Error: dist/helm not found. Run ./scripts/build.sh first."
+if [ ! -d "dist/vial" ]; then
+    echo "Error: dist/vial not found. Run ./scripts/build.sh first."
     exit 1
 fi
 
-echo "=== Installing Helm Module ==="
+echo "=== Installing Vial Module ==="
 
 # Deploy to Move
 echo "Copying module to Move..."
-ssh ableton@move.local "mkdir -p /data/UserData/schwung/modules/sound_generators/helm"
-scp -r dist/helm/* ableton@move.local:/data/UserData/schwung/modules/sound_generators/helm/
+ssh ableton@move.local "mkdir -p /data/UserData/schwung/modules/sound_generators/vial"
+scp -r dist/vial/* ableton@move.local:/data/UserData/schwung/modules/sound_generators/vial/
 
 # Install chain presets if they exist
 if [ -d "src/chain_patches" ]; then
@@ -27,10 +27,10 @@ fi
 
 # Set permissions
 echo "Setting permissions..."
-ssh ableton@move.local "chmod -R a+rw /data/UserData/schwung/modules/sound_generators/helm"
+ssh ableton@move.local "chmod -R a+rw /data/UserData/schwung/modules/sound_generators/vial"
 
 echo ""
 echo "=== Install Complete ==="
-echo "Module installed to: /data/UserData/schwung/modules/sound_generators/helm/"
+echo "Module installed to: /data/UserData/schwung/modules/sound_generators/vial/"
 echo ""
 echo "Restart Move Anything to load the new module."
