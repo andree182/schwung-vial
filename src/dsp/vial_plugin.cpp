@@ -540,6 +540,302 @@ public:
     return true;
   }
 
+  bool loadSurgePreset(const juce::File &file, std::string &error) {
+    if (!file.existsAsFile()) {
+      error = "File does not exist: " + file.getFullPathName().toStdString();
+      return false;
+    }
+
+    juce::MemoryBlock mb;
+    if (!file.loadFileAsData(mb) || mb.getSize() < 100) {
+      error = "Failed to read Surge FXP file";
+      return false;
+    }
+
+    const char *raw = static_cast<const char *>(mb.getData());
+    size_t len = mb.getSize();
+    const char *xml_start = nullptr;
+    for (size_t i = 0; i + 5 < len; ++i) {
+      if (raw[i] == '<' && raw[i + 1] == '?' && raw[i + 2] == 'x' &&
+          raw[i + 3] == 'm' && raw[i + 4] == 'l') {
+        xml_start = raw + i;
+        break;
+      }
+    }
+    if (!xml_start) {
+      error = "No XML payload found in Surge FXP";
+      return false;
+    }
+
+    const char *xml_end = nullptr;
+    const char *end_tag = "</patch>";
+    size_t start_off = (size_t)(xml_start - raw);
+    for (size_t i = start_off; i + 8 <= len; ++i) {
+      if (memcmp(raw + i, end_tag, 8) == 0) {
+        xml_end = raw + i + 8;
+        break;
+      }
+    }
+    if (!xml_end) {
+      error = "Incomplete XML payload in Surge FXP";
+      return false;
+    }
+
+    juce::String xml_str = juce::String::fromUTF8(xml_start, (int)(xml_end - xml_start));
+    std::unique_ptr<juce::XmlElement> root(juce::XmlDocument::parse(xml_str));
+    if (!root) {
+      error = "XML parse error in Surge FXP";
+      return false;
+    }
+
+    juce::XmlElement *params_el = root->getChildByName("parameters");
+    if (!params_el) {
+      error = "Missing <parameters> in Surge FXP";
+      return false;
+    }
+
+    struct SurgeMod {
+      int source;
+      std::string target;
+      float depth;
+    };
+    std::map<std::string, float> sp;
+    std::vector<SurgeMod> smods;
+
+    for (auto *el : params_el->getChildIterator()) {
+      std::string tag = el->getTagName().toStdString();
+      if (el->hasAttribute("value")) {
+        sp[tag] = (float)el->getDoubleAttribute("value", 0.0);
+      }
+      for (auto *mod : el->getChildWithTagNameIterator("modrouting")) {
+        SurgeMod m;
+        m.source = mod->getIntAttribute("source", 0);
+        m.target = tag;
+        m.depth = (float)mod->getDoubleAttribute("depth", 0.0);
+        smods.push_back(m);
+      }
+    }
+
+    auto getP = [&](const std::string &k, float def = 0.0f) -> float {
+      auto it = sp.find(k);
+      return (it != sp.end()) ? it->second : def;
+    };
+
+    std::string sc = (getP("scene_active", 0.0f) > 0.5f) ? "b_" : "a_";
+    float scene_oct = getP(sc + "octave", 0.0f) * 12.0f;
+
+    juce::ScopedLock lock(getCriticalSection());
+    loadInitPreset();
+
+    // 3 Oscillators (a_osc1..3 -> osc_1..3)
+    float noise_level = 0.0f;
+    for (int o = 1; o <= 3; ++o) {
+      std::string okey = sc + "osc" + std::to_string(o);
+      std::string vkey = "osc_" + std::to_string(o);
+      bool muted = (getP(sc + "mute_o" + std::to_string(o), (o == 1) ? 0.0f : 1.0f) > 0.5f);
+      float level = std::clamp(getP(sc + "level_o" + std::to_string(o), (o == 1) ? 1.0f : 0.0f), 0.0f, 1.0f);
+      int otype = (int)std::round(getP(okey + "_type", 0.0f));
+
+      if (!muted && level > 0.001f && otype == 3) {
+        // S&H Noise oscillator -> route to sample noise
+        noise_level = std::max(noise_level, level * 0.5f);
+        setControl(vkey + "_on", 0.0f);
+        continue;
+      }
+
+      int helm_wave = 3; // Default Saw
+      if (otype == 1 || otype == 5 || otype == 6) {
+        helm_wave = 0; // Sine / FM2 / FM3
+      } else if (otype == 0) {
+        // Classic osc: param0 is shape (-1..1: tri -> saw -> square)
+        float shape = getP(okey + "_param0", 0.0f);
+        if (shape < -0.35f) helm_wave = 1;      // Triangle
+        else if (shape > 0.35f) helm_wave = 2;  // Square
+        else helm_wave = 3;                     // Saw
+      } else if (otype == 9) {
+        helm_wave = 1; // String -> Triangle
+      }
+      setOscillatorShape(o - 1, helm_wave);
+
+      setControl(vkey + "_on", (!muted && level > 0.001f) ? 1.0f : 0.0f);
+      setControl(vkey + "_level", std::sqrt(level));
+
+      float oct = getP(okey + "_octave", 0.0f) * 12.0f + scene_oct;
+      float pitch = getP(okey + "_pitch", 0.0f);
+      int semi = (int)std::round(oct + pitch);
+      float fine = (oct + pitch) - (float)semi;
+      setControl(vkey + "_transpose", std::clamp((float)semi, -48.0f, 48.0f));
+      setControl(vkey + "_tune", std::clamp(fine, -1.0f, 1.0f));
+
+      int uni_voices = std::clamp((int)std::round(getP(okey + "_param6", 1.0f)), 1, 16);
+      float uni_detune = std::clamp(getP(okey + "_param5", 0.1f) * 8.0f, 0.0f, 10.0f);
+      setControl(vkey + "_unison_voices", (float)uni_voices);
+      setControl(vkey + "_unison_detune", uni_detune);
+
+      if ((otype == 5 || otype == 6) && o == 1) {
+        float fm_amt = std::clamp(std::abs(getP(okey + "_param0", 0.0f)) * 0.4f, 0.0f, 0.45f);
+        if (fm_amt > 0.01f) {
+          setControl("osc_1_distortion_type", 7.0f);
+          setControl("osc_1_distortion_amount", fm_amt);
+        }
+      }
+    }
+
+    // Scene Noise -> Vial Sample
+    bool noise_muted = (getP(sc + "mute_noise", 1.0f) > 0.5f);
+    if (!noise_muted) {
+      noise_level = std::max(noise_level, std::clamp(getP(sc + "level_noise", 0.0f), 0.0f, 1.0f));
+    }
+    setControl("sample_on", noise_level > 0.001f ? 1.0f : 0.0f);
+    setControl("sample_level", noise_level);
+
+    // Envelopes: Surge env1 = Amp EG -> Vial env_1; Surge env2 = Filter EG -> Vial env_2
+    auto surgeEnvToVial = [](float log2_sec) -> float {
+      if (log2_sec <= -7.99f) return 0.0f;
+      float sec = std::pow(2.0f, std::clamp(log2_sec, -8.0f, 5.0f));
+      return std::clamp(std::pow(sec, 0.25f), 0.0f, 2.37842f);
+    };
+    setControl("env_1_attack", surgeEnvToVial(getP(sc + "env1_attack", -8.0f)));
+    setControl("env_1_decay", surgeEnvToVial(getP(sc + "env1_decay", 0.0f)));
+    setControl("env_1_sustain", std::clamp(getP(sc + "env1_sustain", 1.0f), 0.0f, 1.0f));
+    setControl("env_1_release", surgeEnvToVial(getP(sc + "env1_release", -2.0f)));
+
+    setControl("env_2_attack", surgeEnvToVial(getP(sc + "env2_attack", -8.0f)));
+    setControl("env_2_decay", surgeEnvToVial(getP(sc + "env2_decay", 0.0f)));
+    setControl("env_2_sustain", std::clamp(getP(sc + "env2_sustain", 0.5f), 0.0f, 1.0f));
+    setControl("env_2_release", surgeEnvToVial(getP(sc + "env2_release", -2.0f)));
+
+    // Dual Filters (a_filter1 / a_filter2 -> filter_1 / filter_2)
+    auto mapSurgeFilter = [&](int fidx) {
+      std::string fk = sc + "filter" + std::to_string(fidx);
+      std::string vk = "filter_" + std::to_string(fidx);
+      int ftype = (int)std::round(getP(fk + "_type", 0.0f));
+      if (ftype <= 0) {
+        setControl(vk + "_on", 0.0f);
+        return;
+      }
+      setControl(vk + "_on", 1.0f);
+      float cutoff = std::clamp(69.0f + getP(fk + "_cutoff", 0.0f), 8.0f, 136.0f);
+      float res = std::clamp(getP(fk + "_resonance", 0.0f), 0.0f, 0.92f);
+      float kt = std::clamp(getP(fk + "_keytrack", 0.0f), -1.0f, 1.0f);
+      setControl(vk + "_cutoff", cutoff);
+      setControl(vk + "_resonance", res);
+      setControl(vk + "_keytrack", kt);
+      setControl(vk + "_osc1_input", 1.0f);
+      setControl(vk + "_osc2_input", 1.0f);
+      setControl(vk + "_osc3_input", 1.0f);
+      setControl(vk + "_sample_input", 1.0f);
+      setControl(vk + "_model", 0.0f); // Analog
+      // Surge filter types: 1/2=LP12/24, 3/4=HP12/24, 5/6=BP12/24
+      if (ftype == 3 || ftype == 4 || ftype == 21) {
+        setControl(vk + "_blend", 2.0f); // HP
+      } else if (ftype == 5 || ftype == 6 || ftype == 22) {
+        setControl(vk + "_blend", 1.0f); // BP
+      } else {
+        setControl(vk + "_blend", 0.0f); // LP
+      }
+      setControl(vk + "_style", (ftype == 2 || ftype == 4 || ftype == 6) ? 1.0f : 0.0f);
+    };
+    mapSurgeFilter(1);
+    mapSurgeFilter(2);
+
+    // LFOs 1-3 (a_lfo1..3 -> lfo_1..3)
+    for (int l = 1; l <= 3; ++l) {
+      std::string lk = sc + "lfo" + std::to_string(l);
+      std::string vk = "lfo_" + std::to_string(l);
+      setControl(vk + "_frequency", std::clamp(getP(lk + "_rate", 0.0f), -7.0f, 9.0f));
+      setControl(vk + "_sync", 0.0f); // Seconds/Hz
+      int trig = (int)std::round(getP(lk + "_trigmode", 1.0f));
+      setControl(vk + "_sync_type", (trig == 0) ? 1.0f : 0.0f);
+    }
+
+    // FX Slots (fx1..fx8 -> Vial FX chain)
+    if (getP("fx_bypass", 0.0f) < 0.5f) {
+      for (int slot = 1; slot <= 8; ++slot) {
+        std::string fxk = "fx" + std::to_string(slot);
+        int fx_type = (int)std::round(getP(fxk + "_type", 0.0f));
+        if (fx_type == 1) { // Delay
+          setControl("delay_on", 1.0f);
+          setControl("delay_dry_wet", std::clamp(getP(fxk + "_p10", 0.25f), 0.0f, 0.8f));
+          setControl("delay_feedback", std::clamp(getP(fxk + "_p2", 0.35f), 0.0f, 0.85f));
+        } else if (fx_type == 2 || fx_type == 11) { // Reverb 1 / 2
+          setControl("reverb_on", 1.0f);
+          setControl("reverb_dry_wet", std::clamp(getP(fxk + "_p10", 0.25f), 0.0f, 0.8f));
+        } else if (fx_type == 3) { // Phaser
+          setControl("phaser_on", 1.0f);
+          setControl("phaser_dry_wet", std::clamp(getP(fxk + "_p10", 0.4f), 0.0f, 0.8f));
+        } else if (fx_type == 5) { // Distortion
+          setControl("distortion_on", 1.0f);
+          setControl("distortion_drive", std::clamp(getP(fxk + "_p3", 6.0f), 0.0f, 20.0f));
+          setControl("distortion_mix", std::clamp(getP(fxk + "_p10", 0.5f), 0.0f, 1.0f));
+        } else if (fx_type == 9) { // Chorus
+          setControl("chorus_on", 1.0f);
+          setControl("chorus_dry_wet", std::clamp(getP(fxk + "_p10", 0.35f), 0.0f, 0.8f));
+        } else if (fx_type == 12) { // Flanger
+          setControl("flanger_on", 1.0f);
+          setControl("flanger_dry_wet", std::clamp(getP(fxk + "_p10", 0.35f), 0.0f, 0.8f));
+        }
+      }
+    }
+
+    // Master Volume, Polyphony, Portamento, Legato
+    float scene_vol = std::clamp(getP(sc + "volume", 0.85f), 0.05f, 1.5f);
+    float global_db = std::clamp(getP("volume", 0.0f), -48.0f, 6.0f);
+    float total_db = std::clamp(global_db + 20.0f * log10f(scene_vol), -80.0f, 6.0f);
+    float vial_vol = std::clamp((total_db + 80.0f) * (total_db + 80.0f), 0.0f, 7399.4404f);
+    setControl("volume", vial_vol);
+
+    int polymode = (int)std::round(getP(sc + "polymode", 0.0f));
+    int polylimit = std::clamp((int)std::round(getP("polylimit", 8.0f)), 1, 32);
+    if (polymode == 1 || polymode == 2 || polymode == 4) {
+      setControl("polyphony", 1.0f);
+      setControl("legato", (polymode == 2 || polymode == 4) ? 1.0f : 0.0f);
+    } else {
+      setControl("polyphony", (float)polylimit);
+      setControl("legato", 0.0f);
+    }
+
+    float porta = getP(sc + "portamento", -8.0f);
+    if (porta <= -7.95f) {
+      setControl("portamento_time", -10.0f);
+      setControl("portamento_force", 0.0f);
+    } else {
+      setControl("portamento_time", std::clamp(porta, -10.0f, 4.0f));
+      setControl("portamento_force", (polymode == 1) ? 1.0f : 0.0f);
+    }
+
+    // Modulations: Filter Env Depth + XML <modrouting> entries
+    clearModulations();
+    float f1_envmod = getP(sc + "filter1_envmod", 0.0f);
+    if (std::abs(f1_envmod) > 0.1f) {
+      connectModulationSafe("env_2", "filter_1_cutoff", std::clamp(f1_envmod / 128.0f, -1.0f, 1.0f));
+    }
+    float f2_envmod = getP(sc + "filter2_envmod", 0.0f);
+    if (std::abs(f2_envmod) > 0.1f) {
+      connectModulationSafe("env_2", "filter_2_cutoff", std::clamp(f2_envmod / 128.0f, -1.0f, 1.0f));
+    }
+
+    for (const auto &m : smods) {
+      std::string vsrc = translateSurgeModSource(m.source);
+      std::string vdst = translateSurgeModDest(sc, m.target);
+      if (!vsrc.empty() && !vdst.empty() && std::abs(m.depth) > 0.001f) {
+        float amt = m.depth;
+        if (vdst == "filter_1_cutoff" || vdst == "filter_2_cutoff")
+          amt = std::clamp(m.depth / 128.0f, -1.0f, 1.0f);
+        else
+          amt = std::clamp(m.depth, -1.0f, 1.0f);
+        connectModulationSafe(vsrc, vdst, amt);
+      }
+    }
+
+    processModulationChanges();
+    engine_->updateAllModulationSwitches();
+
+    setPresetName(file.getFileNameWithoutExtension());
+    active_file_ = file;
+    return true;
+  }
+
 private:
   static std::string translateModSource(const std::string &helm_src) {
     if (helm_src == "fil_envelope") return "env_2";
@@ -566,6 +862,42 @@ private:
     if (helm_dst == "delay_dry_wet")    return "delay_dry_wet";
     if (helm_dst == "reverb_dry_wet")   return "reverb_dry_wet";
     if (helm_dst == "distortion_drive") return "distortion_drive";
+    return "";
+  }
+
+  static std::string translateSurgeModSource(int ms) {
+    switch (ms) {
+      case 1: return "velocity";
+      case 2: return "note";
+      case 3:
+      case 4: return "aftertouch";
+      case 5: return "pitch_wheel";
+      case 6: return "mod_wheel";
+      case 7: return "macro_control_1";
+      case 8: return "macro_control_2";
+      case 9: return "macro_control_3";
+      case 10: return "macro_control_4";
+      case 15: return "env_1";
+      case 16: return "env_2";
+      case 17: return "lfo_1";
+      case 18: return "lfo_2";
+      case 19: return "lfo_3";
+      default: return "";
+    }
+  }
+
+  static std::string translateSurgeModDest(const std::string &sc, const std::string &target) {
+    if (target == sc + "filter1_cutoff")    return "filter_1_cutoff";
+    if (target == sc + "filter1_resonance") return "filter_1_resonance";
+    if (target == sc + "filter2_cutoff")    return "filter_2_cutoff";
+    if (target == sc + "filter2_resonance") return "filter_2_resonance";
+    if (target == sc + "volume")            return "volume";
+    if (target == sc + "level_o1")          return "osc_1_level";
+    if (target == sc + "level_o2")          return "osc_2_level";
+    if (target == sc + "level_o3")          return "osc_3_level";
+    if (target == sc + "osc1_pitch")        return "osc_1_tune";
+    if (target == sc + "osc2_pitch")        return "osc_2_tune";
+    if (target == sc + "osc3_pitch")        return "osc_3_tune";
     return "";
   }
 
@@ -840,6 +1172,13 @@ static std::string format_category_name(const juce::File &file) {
     return "Helm-" + dir_name;
   }
 
+  if (ext == ".fxp") {
+    std::string dir_name = file.getParentDirectory().getFileName().toStdString();
+    if (dir_name.empty() || dir_name == "patches" || dir_name == "surge")
+      dir_name = "Factory";
+    return "Surge-" + dir_name;
+  }
+
   /* Native .vital / .vial presets:
    * - <Bank>/Presets/<Preset>.vital            -> Vial-<Bank>
    * - <Bank>/Presets/<Pack>/<Cat>/<Preset>.vital -> Vial-<Pack>-<Cat>
@@ -897,6 +1236,12 @@ static void load_preset_by_index(vial_instance_t *inst, int idx) {
       std::string err2;
       inst->synth_aux->loadHelmPreset(file, err2);
     }
+  } else if (ext == ".fxp") {
+    ok = inst->synth->loadSurgePreset(file, error);
+    if (ok && inst->synth_aux) {
+      std::string err2;
+      inst->synth_aux->loadSurgePreset(file, err2);
+    }
   } else {
     ok = inst->synth->loadNativePreset(file, error);
     if (ok && inst->synth_aux) {
@@ -936,7 +1281,7 @@ static void load_preset_by_index(vial_instance_t *inst, int idx) {
 static void scan_directory_presets(const juce::File &dir,
                                    std::vector<vial_instance_t::patch_entry> &out_list) {
   juce::Array<juce::File> files = dir.findChildFiles(
-      juce::File::findFiles, false, "*.vital;*.vial;*.helm");
+      juce::File::findFiles, false, "*.vital;*.vial;*.helm;*.fxp");
   files.sort();
   for (int i = 0; i < files.size(); ++i) {
     vial_instance_t::patch_entry e;
@@ -1270,14 +1615,19 @@ static void *v2_create_instance(const char *module_dir, const char *json_default
     scan_directory_presets(patches_dir, inst->patches);
   }
 
-  /* Sort patches: Vial-* categories FIRST, then Helm-* categories, then preset name */
+  /* Sort patches: Vial-* first, then Helm-*, then Surge-*, then category & name */
   std::sort(inst->patches.begin(), inst->patches.end(),
             [](const vial_instance_t::patch_entry &a,
                const vial_instance_t::patch_entry &b) {
-              bool a_helm = (a.category.rfind("Helm-", 0) == 0);
-              bool b_helm = (b.category.rfind("Helm-", 0) == 0);
-              if (a_helm != b_helm)
-                return !a_helm; /* Vial first, Helm second */
+              auto groupRank = [](const std::string &cat) {
+                if (cat.rfind("Vial-", 0) == 0) return 0;
+                if (cat.rfind("Helm-", 0) == 0) return 1;
+                return 2; /* Surge-* */
+              };
+              int ra = groupRank(a.category);
+              int rb = groupRank(b.category);
+              if (ra != rb)
+                return ra < rb;
               if (a.category != b.category)
                 return a.category < b.category;
               return a.name < b.name;

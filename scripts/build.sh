@@ -81,11 +81,14 @@ if [ -d "src/dsp/helm/patches" ]; then
     fi
 fi
 
-# Copy only .vital/.vial preset files from presets/ (wavetables & samples are embedded)
+# Copy only .vital/.vial/.fxp preset files from presets/ (wavetables & samples are embedded;
+# skip Surge Tutorials/Templates/Vocoder which require Lua or Audio-In)
 if [ -d "presets" ]; then
-    echo "Copying Vial/Vital presets..."
+    echo "Copying Vial/Vital and Surge XT presets..."
     mkdir -p dist/vial/vial-data/patches
-    (cd presets && find . -type f \( -iname "*.vital" -o -iname "*.vial" \) -exec cp --parents {} ../dist/vial/vial-data/patches/ \;)
+    (cd presets && find . -type f \( -iname "*.vital" -o -iname "*.vial" -o -iname "*.fxp" \) \
+        ! -path "*/Templates/*" ! -path "*/Tutorials/*" ! -path "*/Vocoder/*" \
+        -exec cp --parents {} ../dist/vial/vial-data/patches/ \;)
 fi
 
 # Create tarball for release

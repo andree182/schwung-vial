@@ -13,6 +13,7 @@ Based on [Vial](https://github.com/buchenberg/vial) (a JUCE 8 / CMake fork of [V
 * **Multi-Format Preset Support:**
   * Native Vital/Vial presets (`.vital`, `.vial`) — wavetables and samples are embedded directly inside each preset file
   * On-the-fly Helm preset translation (`.helm`) — translates Helm's 2 oscillators, sub oscillator (mapped to Oscillator 3), noise, envelopes, filter, FM cross-modulation, portamento, LFOs, effects, and modulation routings
+  * On-the-fly Surge XT preset translation (`.fxp`) — parses the embedded `<patch>` XML inside `.fxp` files and translates Scene A's 3 oscillators, noise, dual filters, Amp/Filter envelopes, LFOs, FX slots, portamento/legato, and `<modrouting>` connections into Vial
 * **Full Schwung Shadow UI Hierarchy:** Navigate categories (`Jump to Category`), oscillators, sampler, filters, envelopes, LFOs, effects, macros, and CPU/engine settings directly from Move's jog wheel and 8 knobs
 * **Symbol-Isolated (`plugin.lds`):** Exports only `move_plugin_init_v2` so Vial (`JUCE 8`) can run side-by-side with Helm (`JUCE 5`) on parallel tracks without C++/JUCE symbol collisions
 
@@ -20,18 +21,19 @@ Based on [Vial](https://github.com/buchenberg/vial) (a JUCE 8 / CMake fork of [V
 
 ### Build-Time Source Directories (`./scripts/build.sh`)
 During packaging, `scripts/build.sh` populates `dist/vial/vial-data/patches/` from:
-1. **`presets/`** — Recursively copies all `*.vital` and `*.vial` files (skipping standalone `.wav` / `.vitaltable` / `.vitallfo` files since `.vital` presets embed their wavetables and samples inline).
+1. **`presets/`** — Recursively copies all `*.vital`, `*.vial`, and `*.fxp` files (skipping standalone `.wav`/`.vitaltable`/`.vitallfo` files and Surge's `Templates`/`Tutorials`/`Vocoder` folders).
 2. **`src/dsp/helm/patches/Factory Presets/`** (plus `data/Move Organ.helm`) — Copies the 275 factory `.helm` presets.
 
 ### Runtime Search Directories on Ableton Move
-When the plugin initializes (`v2_create_instance`), it recursively scans for `*.vital`, `*.vial`, and `*.helm` files in:
+When the plugin initializes (`v2_create_instance`), it recursively scans for `*.vital`, `*.vial`, `*.helm`, and `*.fxp` files in:
 1. **`<module_dir>/vial-data/patches`** *(primary — `/data/UserData/schwung/modules/sound_generators/vial/vial-data/patches` on Move)*
 2. **`<module_dir>/helm-data/patches`** *(fallback if `vial-data/patches` does not exist)*
 
-### Category Prefixes in `Jump to Category`
-Presets are automatically sorted and grouped into format-prefixed categories:
-* **`Vial-<Category>`** for `.vital` / `.vial` files (if a preset resides in `<Bank>/Presets/<Preset>.vital`, the parent `<Bank>` name is used, e.g., `Vial-ESW - Origins`; if organized into subfolders like `<Bank>/Presets/<Pack>/Keys/<Preset>.vital`, the subfolder name is used, e.g., `Vial-Keys`).
-* **`Helm-<Category>`** for `.helm` files (e.g., `Helm-Arp`, `Helm-Bass`, `Helm-Keys`, `Helm-Lead`, `Helm-Pad`).
+### Category Prefixes & Ordering in `Jump to Category`
+Presets are automatically sorted into three cleanly separated groups:
+1. **`Vial-<Category>`** for `.vital` / `.vial` files (e.g., `Vial-ESW - Origins`, `Vial-GM Feb-25-Bass`, `Vial-GM Feb-25-Keys`).
+2. **`Helm-<Category>`** for `.helm` files (e.g., `Helm-Arp`, `Helm-Bass`, `Helm-Keys`, `Helm-Lead`, `Helm-Pad`).
+3. **`Surge-<Category>`** for `.fxp` files (e.g., `Surge-Basses`, `Surge-Keys`, `Surge-Leads`, `Surge-Pads`, `Surge-Plucks`, `Surge-Polysynths`).
 
 ## Move CPU Optimizations (ARM Cortex-A72)
 
