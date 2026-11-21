@@ -69,7 +69,8 @@ cat src/ui.js > dist/vial/ui.js
 cat build/dsp.so > dist/vial/dsp.so
 chmod +x dist/vial/dsp.so
 
-# Copy patches (both vial-data and backward-compat helm-data)
+# Copy patches (clean target first so removed/filtered files don't linger)
+rm -rf dist/vial/vial-data/patches
 if [ -d "src/dsp/helm/patches" ]; then
     echo "Copying factory patches..."
     mkdir -p dist/vial/vial-data/patches
@@ -80,11 +81,11 @@ if [ -d "src/dsp/helm/patches" ]; then
     fi
 fi
 
-# Copy native Vial/Vital presets (e.g. presets/<Bank>/Presets/*.vital)
+# Copy only .vital/.vial preset files from presets/ (wavetables & samples are embedded)
 if [ -d "presets" ]; then
     echo "Copying Vial/Vital presets..."
     mkdir -p dist/vial/vial-data/patches
-    cp -r presets/* dist/vial/vial-data/patches/
+    (cd presets && find . -type f \( -iname "*.vital" -o -iname "*.vial" \) -exec cp --parents {} ../dist/vial/vial-data/patches/ \;)
 fi
 
 # Create tarball for release

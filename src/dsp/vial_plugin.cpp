@@ -360,13 +360,11 @@ public:
     setControl("osc_2_unison_voices", (float)std::clamp((int)settings.value("osc_2_unison_voices", 1.0f), 1, 16));
     setControl("osc_2_unison_detune", std::clamp(settings.value("osc_2_unison_detune", 0.0f) * 0.1f, 0.0f, 10.0f));
 
-    // Cross modulation (FM between Osc 1 and Osc 2)
+    // Cross modulation (one-way FM: Osc 2 -> Osc 1; mutual FM in Vial destabilizes pitch)
     float cross_mod = std::clamp((float)settings.value("cross_modulation", 0.0f), 0.0f, 0.5f);
     if (cross_mod > 0.001f) {
-      setControl("osc_1_distortion_type", 7.0f);   // FM <- Osc 2
-      setControl("osc_1_distortion_amount", std::clamp(0.5f + cross_mod, 0.0f, 1.0f));
-      setControl("osc_2_distortion_type", 7.0f);   // FM <- Osc 1
-      setControl("osc_2_distortion_amount", std::clamp(0.5f + cross_mod, 0.0f, 1.0f));
+      setControl("osc_1_distortion_type", 7.0f);   // kFmOscillatorA (FM <- Osc 2)
+      setControl("osc_1_distortion_amount", std::clamp(cross_mod * 0.6f, 0.0f, 0.5f));
     }
 
     // Sub oscillator -> mapped onto Vial's Oscillator 3 (Vial has no separate sub module)
@@ -498,7 +496,13 @@ public:
         std::string vial_dst = translateModDest(dst);
 
         if (!vial_src.empty() && !vial_dst.empty()) {
-          connectModulationSafe(vial_src, vial_dst, amount);
+          float scaled_amount = amount;
+          if (vial_src == "env_1" && (vial_dst == "osc_1_level" || vial_dst == "osc_2_level") && amount < -0.5f) {
+            scaled_amount = amount * 0.45f;
+          } else if (vial_dst == "osc_1_distortion_amount") {
+            scaled_amount = amount * 0.5f;
+          }
+          connectModulationSafe(vial_src, vial_dst, scaled_amount);
         }
       }
     }
