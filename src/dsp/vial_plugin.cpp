@@ -171,11 +171,14 @@ static std::string json_escape(const std::string &s) {
  * ===================================================================== */
 class VialMoveInstance : public HeadlessSynth {
 public:
-  VialMoveInstance() : HeadlessSynth(), current_time_seconds_(0.0) {}
+  VialMoveInstance()
+      : HeadlessSynth(), current_time_seconds_(0.0), silent_blocks_(0) {}
   ~VialMoveInstance() override {}
 
   using SynthBase::getConnection;
   using SynthBase::controls_;
+
+  void wakeFromSleep() { silent_blocks_ = 0; }
 
   void prepare(double sample_rate, int buffer_size) {
     (void)buffer_size;
@@ -211,6 +214,7 @@ public:
 
   void setControl(const std::string &name, float val) {
     juce::ScopedLock lock(getCriticalSection());
+    silent_blocks_ = 0;
     auto it = controls_.find(name);
     if (it != controls_.end() && it->second != nullptr) {
       it->second->set(val);
@@ -234,6 +238,13 @@ public:
     if (!lock.isLocked())
       return;
 
+    if (!midi_messages.isEmpty()) {
+      silent_blocks_ = 0;
+    } else if (silent_blocks_ >= 150 && engine_->getNumActiveVoices() == 0) {
+      /* Engine and FX tails have decayed to silence; skip DSP until next MIDI/param event */
+      return;
+    }
+
     processModulationChanges();
     if (num_samples > 0)
       processKeyboardEvents(midi_messages, num_samples);
@@ -252,6 +263,16 @@ public:
 
       current_time_seconds_ += chunk * sample_time;
       sample_offset += chunk;
+    }
+
+    if (midi_messages.isEmpty() && engine_->getNumActiveVoices() == 0) {
+      float peak = buffer->getMagnitude(0, num_samples);
+      if (peak < 1e-5f)
+        silent_blocks_++;
+      else
+        silent_blocks_ = 0;
+    } else {
+      silent_blocks_ = 0;
     }
   }
 
@@ -545,6 +566,7 @@ private:
   }
 
   double current_time_seconds_;
+  int silent_blocks_;
 };
 
 /* =====================================================================
@@ -587,6 +609,7 @@ typedef struct vial_instance_t {
   int max_polyphony;
   int max_unison;
   bool fx_bypass;
+  float saved_fx_on[7];
 
   /* Pre-allocated audio render buffer (avoids per-block heap allocation) */
   juce::AudioSampleBuffer float_buffer;
@@ -615,6 +638,7 @@ typedef struct vial_instance_t {
     max_polyphony = 4;  /* Cap polyphony for Cortex-A53 */
     max_unison = 3;     /* Cap unison voices per osc */
     fx_bypass = false;
+    memset(saved_fx_on, 0, sizeof(saved_fx_on));
     sync_bpm = true;
     last_clock_time = 0.0;
     clock_count = 0;
@@ -627,11 +651,35 @@ typedef struct vial_instance_t {
 /* =====================================================================
  * CPU-saver limits applied after preset load or setting change
  * ===================================================================== */
+static const char *kFxOnKeys[7] = {
+    "reverb_on", "delay_on", "chorus_on", "flanger_on",
+    "phaser_on", "distortion_on", "compressor_on"
+};
+
+static void snapshot_fx_state(vial_instance_t *inst) {
+  if (!inst || !inst->synth)
+    return;
+  for (int i = 0; i < 7; ++i) {
+    inst->saved_fx_on[i] = inst->synth->getControl(kFxOnKeys[i], 0.0f);
+  }
+}
+
+static void apply_fx_bypass(vial_instance_t *inst) {
+  if (!inst || !inst->synth)
+    return;
+  for (int i = 0; i < 7; ++i) {
+    inst->synth->setControl(kFxOnKeys[i], inst->fx_bypass ? 0.0f : inst->saved_fx_on[i]);
+  }
+}
+
 static void apply_cpu_limits(vial_instance_t *inst) {
   if (!inst || !inst->synth)
     return;
 
   inst->synth->applyOversampling(inst->oversampling);
+
+  /* Use Voice Override = Steal (1) so active voices never exceed polyphony cap */
+  inst->synth->setControl("voice_override", 1.0f);
 
   float cur_poly = inst->synth->getControl("polyphony", (float)inst->max_polyphony);
   if (cur_poly > (float)inst->max_polyphony) {
@@ -648,13 +696,7 @@ static void apply_cpu_limits(vial_instance_t *inst) {
   }
 
   if (inst->fx_bypass) {
-    inst->synth->setControl("reverb_on", 0.0f);
-    inst->synth->setControl("delay_on", 0.0f);
-    inst->synth->setControl("chorus_on", 0.0f);
-    inst->synth->setControl("flanger_on", 0.0f);
-    inst->synth->setControl("phaser_on", 0.0f);
-    inst->synth->setControl("distortion_on", 0.0f);
-    inst->synth->setControl("compressor_on", 0.0f);
+    apply_fx_bypass(inst);
   }
 }
 
@@ -663,17 +705,38 @@ static void apply_cpu_limits(vial_instance_t *inst) {
  * ===================================================================== */
 static std::string format_category_name(const juce::File &file) {
   juce::String ext = file.getFileExtension().toLowerCase();
-  std::string prefix = (ext == ".helm") ? "Helm-" : "Vial-";
+  if (ext == ".helm") {
+    std::string dir_name = file.getParentDirectory().getFileName().toStdString();
+    if (dir_name.empty() || dir_name == "patches")
+      dir_name = "Factory";
+    return "Helm-" + dir_name;
+  }
+
+  /* Native .vital / .vial presets:
+   * - <Bank>/Presets/<Preset>.vital            -> Vial-<Bank>
+   * - <Bank>/Presets/<Pack>/<Cat>/<Preset>.vital -> Vial-<Pack>-<Cat>
+   * - <Cat>/<Preset>.vital                     -> Vial-<Cat>
+   */
   juce::File parent = file.getParentDirectory();
   std::string dir_name = parent.getFileName().toStdString();
   if (dir_name == "Presets" || dir_name == "presets") {
     std::string bank_name = parent.getParentDirectory().getFileName().toStdString();
     if (!bank_name.empty() && bank_name != "patches")
-      dir_name = bank_name;
+      return "Vial-" + bank_name;
+    return "Vial-Factory";
   }
+
+  juce::File grand = parent.getParentDirectory();
+  std::string grand_name = grand.getFileName().toStdString();
+  if (!grand_name.empty() && grand_name != "patches" &&
+      grand_name != "Presets" && grand_name != "presets" &&
+      grand_name != "Factory Presets") {
+    return "Vial-" + grand_name + "-" + dir_name;
+  }
+
   if (dir_name.empty() || dir_name == "patches")
     dir_name = "Factory";
-  return prefix + dir_name;
+  return "Vial-" + dir_name;
 }
 
 /* =====================================================================
@@ -707,6 +770,7 @@ static void load_preset_by_index(vial_instance_t *inst, int idx) {
   }
 
   if (ok) {
+    snapshot_fx_state(inst);
     apply_cpu_limits(inst);
     inst->current_preset = idx;
     strncpy(inst->preset_name, entry.name.c_str(), sizeof(inst->preset_name) - 1);
@@ -922,8 +986,8 @@ static void build_ui_hierarchy(vial_instance_t *inst) {
           "},"
           "\"settings\":{"
             "\"children\":null,"
-            "\"knobs\":[\"oversampling\",\"max_polyphony\",\"max_unison\",\"fx_bypass\",\"volume\",\"bpm\",\"sync_bpm\",\"polyphony\"],"
-            "\"params\":[\"oversampling\",\"max_polyphony\",\"max_unison\",\"fx_bypass\",\"bpm\",\"sync_bpm\",\"volume\",\"polyphony\",\"portamento_time\",\"portamento_slope\",\"legato\",\"pitch_bend_range\",\"velocity_track\",\"voice_tune\"]"
+            "\"knobs\":[\"oversampling\",\"fft_cache\",\"max_polyphony\",\"max_unison\",\"fx_bypass\",\"volume\",\"bpm\",\"sync_bpm\"],"
+            "\"params\":[\"oversampling\",\"fft_cache\",\"max_polyphony\",\"max_unison\",\"fx_bypass\",\"bpm\",\"sync_bpm\",\"volume\",\"polyphony\",\"portamento_time\",\"portamento_slope\",\"legato\",\"pitch_bend_range\",\"velocity_track\",\"voice_tune\"]"
           "}"
         "}"
       "}";
@@ -944,6 +1008,7 @@ static void build_chain_params(vial_instance_t *inst) {
   j += ",{\"key\":\"sync_bpm\",\"name\":\"Auto BPM\",\"type\":\"enum\",\"options\":[\"Off\",\"On\"]}";
   j += ",{\"key\":\"volume\",\"name\":\"Volume\",\"type\":\"float\",\"min\":0.0,\"max\":1.0,\"step\":0.02}";
   j += ",{\"key\":\"oversampling\",\"name\":\"Oversampling\",\"type\":\"enum\",\"options\":[\"1x (Draft)\",\"2x\",\"4x\",\"8x\"]}";
+  j += ",{\"key\":\"fft_cache\",\"name\":\"FFT Cache\",\"type\":\"enum\",\"options\":[\"Off\",\"On\"]}";
   j += ",{\"key\":\"max_polyphony\",\"name\":\"Max Polyphony\",\"type\":\"int\",\"min\":1,\"max\":16}";
   j += ",{\"key\":\"max_unison\",\"name\":\"Max Unison\",\"type\":\"int\",\"min\":1,\"max\":16}";
   j += ",{\"key\":\"fx_bypass\",\"name\":\"Bypass FX\",\"type\":\"enum\",\"options\":[\"Off\",\"On\"]}";
@@ -1052,10 +1117,14 @@ static void *v2_create_instance(const char *module_dir, const char *json_default
     scan_directory_presets(patches_dir, inst->patches);
   }
 
-  /* Sort patches by formatted category (Helm-Bass, Vial-Leads, ...) then preset name */
+  /* Sort patches: Vial-* categories FIRST, then Helm-* categories, then preset name */
   std::sort(inst->patches.begin(), inst->patches.end(),
             [](const vial_instance_t::patch_entry &a,
                const vial_instance_t::patch_entry &b) {
+              bool a_helm = (a.category.rfind("Helm-", 0) == 0);
+              bool b_helm = (b.category.rfind("Helm-", 0) == 0);
+              if (a_helm != b_helm)
+                return !a_helm; /* Vial first, Helm second */
               if (a.category != b.category)
                 return a.category < b.category;
               return a.name < b.name;
@@ -1275,6 +1344,13 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
     return;
   }
 
+  if (strcmp(key, "fft_cache") == 0) {
+    bool enabled = (atoi(val) != 0);
+    juce::dsp::fftCacheEnabled().store(enabled, std::memory_order_relaxed);
+    plugin_log(enabled ? "FFT Cache enabled" : "FFT Cache disabled");
+    return;
+  }
+
   if (strcmp(key, "max_polyphony") == 0) {
     inst->max_polyphony = std::clamp(atoi(val), 1, 16);
     apply_cpu_limits(inst);
@@ -1288,9 +1364,13 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
   }
 
   if (strcmp(key, "fx_bypass") == 0) {
-    inst->fx_bypass = (atoi(val) != 0);
-    if (inst->fx_bypass) {
-      apply_cpu_limits(inst);
+    bool new_bypass = (atoi(val) != 0);
+    if (new_bypass != inst->fx_bypass) {
+      if (new_bypass) {
+        snapshot_fx_state(inst);
+      }
+      inst->fx_bypass = new_bypass;
+      apply_fx_bypass(inst);
     }
     return;
   }
@@ -1352,6 +1432,21 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
 
   if (strcmp(key, "oversampling") == 0)
     return snprintf(buf, buf_len, "%d", inst->oversampling);
+
+  if (strcmp(key, "fft_cache") == 0)
+    return snprintf(buf, buf_len, "%d",
+                    juce::dsp::fftCacheEnabled().load(std::memory_order_relaxed) ? 1 : 0);
+
+  if (strcmp(key, "jump_to_category") == 0) {
+    int cur_cat = 0;
+    for (int i = 0; i < (int)inst->categories.size(); ++i) {
+      if (inst->categories[i].first_idx <= inst->current_preset)
+        cur_cat = i;
+      else
+        break;
+    }
+    return snprintf(buf, buf_len, "%d", cur_cat);
+  }
 
   if (strcmp(key, "max_polyphony") == 0)
     return snprintf(buf, buf_len, "%d", inst->max_polyphony);

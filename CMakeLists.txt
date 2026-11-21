@@ -28,7 +28,7 @@ add_definitions(
 
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64" OR CMAKE_SYSTEM_PROCESSOR MATCHES "arm64")
     add_definitions(-D__ARM_NEON=1 -D__ARM_NEON__=1)
-    add_compile_options(-O3 -mcpu=cortex-a53 -ffast-math -fno-finite-math-only -fno-math-errno)
+    add_compile_options(-O3 -mcpu=cortex-a72 -ffast-math -fno-finite-math-only -fno-math-errno -funroll-loops)
 endif()
 
 # Header search paths

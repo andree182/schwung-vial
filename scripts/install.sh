@@ -14,9 +14,9 @@ fi
 
 echo "=== Installing Vial Module ==="
 
-# Deploy to Move
+# Deploy to Move (clean old patches first so removed/filtered files don't linger)
 echo "Copying module to Move..."
-ssh ableton@move.local "mkdir -p /data/UserData/schwung/modules/sound_generators/vial"
+ssh ableton@move.local "mkdir -p /data/UserData/schwung/modules/sound_generators/vial && rm -rf /data/UserData/schwung/modules/sound_generators/vial/vial-data/patches"
 scp -r dist/vial/* ableton@move.local:/data/UserData/schwung/modules/sound_generators/vial/
 
 # Install chain presets if they exist
