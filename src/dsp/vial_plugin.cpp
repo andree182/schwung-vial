@@ -5,12 +5,15 @@
  */
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <map>
 #include <memory>
+#include <pthread.h>
+#include <sched.h>
 #include <string>
 #include <vector>
 
@@ -179,6 +182,7 @@ public:
   using SynthBase::controls_;
 
   void wakeFromSleep() { silent_blocks_ = 0; }
+  bool isSleeping() const { return silent_blocks_ >= 150; }
 
   void prepare(double sample_rate, int buffer_size) {
     (void)buffer_size;
@@ -577,6 +581,7 @@ typedef struct vial_instance_t {
   char error_msg[256];
 
   VialMoveInstance *synth;
+  VialMoveInstance *synth_aux; /* Secondary voice engine running on Core 2 */
 
   int current_preset;
   int preset_count;
@@ -593,26 +598,42 @@ typedef struct vial_instance_t {
   };
   std::vector<patch_entry> patches;
 
-  /* Patch Categories (e.g., Helm-Bass, Helm-Keys, Vial-Leads) */
+  /* Patch Categories (e.g., Vial-ESW - Origins, Vial-GM Feb-25-Bass, Helm-Bass) */
   struct category_entry {
     char name[64];
     int first_idx;
   };
   std::vector<category_entry> categories;
 
-  /* Thread-safe MIDI queue */
+  /* Thread-safe MIDI queues (engine 0 on Core 3, engine 1 on Core 2) */
   juce::CriticalSection midi_lock;
   juce::MidiBuffer midi_queue;
+  juce::MidiBuffer midi_queue_aux;
+  int8_t note_owner[128];
+  int held_count[2];
 
-  /* CPU optimization settings (Move defaults: 1x oversampling, 4 voices, 3 unison) */
+  /* CPU optimization settings (Move defaults: 1x oversampling, 4 voices, 3 unison, multi-core on) */
   int oversampling;
   int max_polyphony;
   int max_unison;
   bool fx_bypass;
+  bool multi_core;
   float saved_fx_on[7];
 
-  /* Pre-allocated audio render buffer (avoids per-block heap allocation) */
+  /* Pre-allocated audio render buffers (avoids per-block heap allocation) */
   juce::AudioSampleBuffer float_buffer;
+  juce::AudioSampleBuffer float_buffer_aux;
+  juce::MidiBuffer local_midi_aux;
+
+  /* Persistent Core 2 worker thread for synth_aux (SCHED_OTHER, explicit sched) */
+  pthread_t worker_thread;
+  bool worker_started;
+  pthread_mutex_t worker_mutex;
+  pthread_cond_t worker_cond;
+  pthread_cond_t worker_done_cond;
+  bool worker_has_work;
+  bool worker_exit;
+  int worker_frames;
 
   /* Auto BPM Sync */
   bool sync_bpm;
@@ -624,21 +645,35 @@ typedef struct vial_instance_t {
   char *ui_hierarchy_json;
   char *chain_params_json;
 
-  vial_instance_t() : float_buffer(2, MOVE_FRAMES_PER_BLOCK) {
+  vial_instance_t()
+      : float_buffer(2, MOVE_FRAMES_PER_BLOCK),
+        float_buffer_aux(2, MOVE_FRAMES_PER_BLOCK) {
     memset(module_dir, 0, sizeof(module_dir));
     memset(error_msg, 0, sizeof(error_msg));
     synth = nullptr;
+    synth_aux = nullptr;
     current_preset = 0;
     preset_count = 0;
     octave_transpose = 0;
     output_gain = 0.8f;
     bpm = 120.0f;
     memset(preset_name, 0, sizeof(preset_name));
+    memset(note_owner, -1, sizeof(note_owner));
+    held_count[0] = 0;
+    held_count[1] = 0;
     oversampling = 0;   /* 1x (Draft) */
-    max_polyphony = 4;  /* Cap polyphony for Cortex-A53 */
+    max_polyphony = 4;  /* Cap polyphony (split across 2 cores when multi_core=true) */
     max_unison = 3;     /* Cap unison voices per osc */
     fx_bypass = false;
+    multi_core = false; /* Default off: 1 core is faster up to 4 voices due to futex wake overhead; turn On for 6-16 voices */
     memset(saved_fx_on, 0, sizeof(saved_fx_on));
+    worker_started = false;
+    pthread_mutex_init(&worker_mutex, nullptr);
+    pthread_cond_init(&worker_cond, nullptr);
+    pthread_cond_init(&worker_done_cond, nullptr);
+    worker_has_work = false;
+    worker_exit = false;
+    worker_frames = MOVE_FRAMES_PER_BLOCK;
     sync_bpm = true;
     last_clock_time = 0.0;
     clock_count = 0;
@@ -646,7 +681,80 @@ typedef struct vial_instance_t {
     ui_hierarchy_json = nullptr;
     chain_params_json = nullptr;
   }
+
+  ~vial_instance_t() {
+    pthread_cond_destroy(&worker_done_cond);
+    pthread_cond_destroy(&worker_cond);
+    pthread_mutex_destroy(&worker_mutex);
+  }
 } vial_instance_t;
+
+static void *aux_worker_main(void *arg) {
+  vial_instance_t *inst = (vial_instance_t *)arg;
+#ifdef __linux__
+  pthread_setname_np(pthread_self(), "vial-dsp-1");
+  /* Pin to Core 2 (Move SPI Audio Main is on Core 3) */
+  cpu_set_t cpuset;
+  CPU_ZERO(&cpuset);
+  CPU_SET(2, &cpuset);
+  pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset);
+#endif
+
+  pthread_mutex_lock(&inst->worker_mutex);
+  while (!inst->worker_exit) {
+    while (!inst->worker_has_work && !inst->worker_exit) {
+      pthread_cond_wait(&inst->worker_cond, &inst->worker_mutex);
+    }
+    if (inst->worker_exit)
+      break;
+
+    int frames = inst->worker_frames;
+    pthread_mutex_unlock(&inst->worker_mutex);
+
+    if (inst->synth_aux) {
+      if (inst->float_buffer_aux.getNumSamples() < frames) {
+        inst->float_buffer_aux.setSize(2, frames, false, false, true);
+      }
+      inst->float_buffer_aux.clear();
+      inst->synth_aux->process(&inst->float_buffer_aux, inst->local_midi_aux, frames);
+    }
+
+    pthread_mutex_lock(&inst->worker_mutex);
+    inst->worker_has_work = false;
+    pthread_cond_signal(&inst->worker_done_cond);
+  }
+  pthread_mutex_unlock(&inst->worker_mutex);
+  return nullptr;
+}
+
+static void start_aux_worker(vial_instance_t *inst) {
+  if (inst->worker_started)
+    return;
+  pthread_attr_t attr;
+  pthread_attr_init(&attr);
+  /* Explicitly use SCHED_OTHER so we never inherit SPI's SCHED_FIFO 90 */
+  pthread_attr_setinheritsched(&attr, PTHREAD_EXPLICIT_SCHED);
+  pthread_attr_setschedpolicy(&attr, SCHED_OTHER);
+  if (pthread_create(&inst->worker_thread, &attr, aux_worker_main, inst) == 0) {
+    inst->worker_started = true;
+    plugin_log("Started Core 2 worker thread (vial-dsp-1, SCHED_OTHER)");
+  } else {
+    plugin_log("Warning: failed to create Core 2 worker thread; falling back to single-core");
+    inst->multi_core = false;
+  }
+  pthread_attr_destroy(&attr);
+}
+
+static void stop_aux_worker(vial_instance_t *inst) {
+  if (!inst->worker_started)
+    return;
+  pthread_mutex_lock(&inst->worker_mutex);
+  inst->worker_exit = true;
+  pthread_cond_signal(&inst->worker_cond);
+  pthread_mutex_unlock(&inst->worker_mutex);
+  pthread_join(inst->worker_thread, nullptr);
+  inst->worker_started = false;
+}
 
 /* =====================================================================
  * CPU-saver limits applied after preset load or setting change
@@ -664,11 +772,18 @@ static void snapshot_fx_state(vial_instance_t *inst) {
   }
 }
 
+static void set_control_both(vial_instance_t *inst, const std::string &key, float val) {
+  if (inst->synth)
+    inst->synth->setControl(key, val);
+  if (inst->synth_aux)
+    inst->synth_aux->setControl(key, val);
+}
+
 static void apply_fx_bypass(vial_instance_t *inst) {
   if (!inst || !inst->synth)
     return;
   for (int i = 0; i < 7; ++i) {
-    inst->synth->setControl(kFxOnKeys[i], inst->fx_bypass ? 0.0f : inst->saved_fx_on[i]);
+    set_control_both(inst, kFxOnKeys[i], inst->fx_bypass ? 0.0f : inst->saved_fx_on[i]);
   }
 }
 
@@ -677,13 +792,26 @@ static void apply_cpu_limits(vial_instance_t *inst) {
     return;
 
   inst->synth->applyOversampling(inst->oversampling);
+  if (inst->synth_aux)
+    inst->synth_aux->applyOversampling(inst->oversampling);
 
-  /* Use Voice Override = Steal (1) so active voices never exceed polyphony cap */
-  inst->synth->setControl("voice_override", 1.0f);
+  /* Disable per-unison-pair spectral IFFTs (massive CPU win on spectral-morph pads) */
+  set_control_both(inst, "osc_1_spectral_unison", 0.0f);
+  set_control_both(inst, "osc_2_spectral_unison", 0.0f);
+  set_control_both(inst, "osc_3_spectral_unison", 0.0f);
 
   float cur_poly = inst->synth->getControl("polyphony", (float)inst->max_polyphony);
-  if (cur_poly > (float)inst->max_polyphony) {
-    inst->synth->setControl("polyphony", (float)inst->max_polyphony);
+  int target_poly = std::min((int)std::round(cur_poly), inst->max_polyphony);
+  if (target_poly < 1) target_poly = 1;
+  if (inst->multi_core && inst->synth_aux && target_poly > 2) {
+    int p0 = (target_poly + 1) / 2;
+    int p1 = target_poly - p0;
+    inst->synth->setControl("polyphony", (float)p0);
+    inst->synth_aux->setControl("polyphony", (float)p1);
+  } else {
+    inst->synth->setControl("polyphony", (float)target_poly);
+    if (inst->synth_aux)
+      inst->synth_aux->setControl("polyphony", (float)target_poly);
   }
 
   const char *unison_keys[3] = {
@@ -691,7 +819,7 @@ static void apply_cpu_limits(vial_instance_t *inst) {
   for (int i = 0; i < 3; ++i) {
     float cur_u = inst->synth->getControl(unison_keys[i], 1.0f);
     if (cur_u > (float)inst->max_unison) {
-      inst->synth->setControl(unison_keys[i], (float)inst->max_unison);
+      set_control_both(inst, unison_keys[i], (float)inst->max_unison);
     }
   }
 
@@ -765,11 +893,25 @@ static void load_preset_by_index(vial_instance_t *inst, int idx) {
   juce::String ext = file.getFileExtension().toLowerCase();
   if (ext == ".helm") {
     ok = inst->synth->loadHelmPreset(file, error);
+    if (ok && inst->synth_aux) {
+      std::string err2;
+      inst->synth_aux->loadHelmPreset(file, err2);
+    }
   } else {
     ok = inst->synth->loadNativePreset(file, error);
+    if (ok && inst->synth_aux) {
+      std::string err2;
+      inst->synth_aux->loadNativePreset(file, err2);
+    }
   }
 
   if (ok) {
+    {
+      juce::ScopedLock l(inst->midi_lock);
+      memset(inst->note_owner, -1, sizeof(inst->note_owner));
+      inst->held_count[0] = 0;
+      inst->held_count[1] = 0;
+    }
     snapshot_fx_state(inst);
     apply_cpu_limits(inst);
     inst->current_preset = idx;
@@ -986,8 +1128,8 @@ static void build_ui_hierarchy(vial_instance_t *inst) {
           "},"
           "\"settings\":{"
             "\"children\":null,"
-            "\"knobs\":[\"oversampling\",\"fft_cache\",\"max_polyphony\",\"max_unison\",\"fx_bypass\",\"volume\",\"bpm\",\"sync_bpm\"],"
-            "\"params\":[\"oversampling\",\"fft_cache\",\"max_polyphony\",\"max_unison\",\"fx_bypass\",\"bpm\",\"sync_bpm\",\"volume\",\"polyphony\",\"portamento_time\",\"portamento_slope\",\"legato\",\"pitch_bend_range\",\"velocity_track\",\"voice_tune\"]"
+            "\"knobs\":[\"oversampling\",\"multi_core\",\"fft_cache\",\"max_polyphony\",\"max_unison\",\"fx_bypass\",\"volume\",\"bpm\"],"
+            "\"params\":[\"oversampling\",\"multi_core\",\"fft_cache\",\"max_polyphony\",\"max_unison\",\"fx_bypass\",\"bpm\",\"sync_bpm\",\"volume\",\"polyphony\",\"portamento_time\",\"portamento_slope\",\"legato\",\"pitch_bend_range\",\"velocity_track\",\"voice_tune\"]"
           "}"
         "}"
       "}";
@@ -1008,6 +1150,7 @@ static void build_chain_params(vial_instance_t *inst) {
   j += ",{\"key\":\"sync_bpm\",\"name\":\"Auto BPM\",\"type\":\"enum\",\"options\":[\"Off\",\"On\"]}";
   j += ",{\"key\":\"volume\",\"name\":\"Volume\",\"type\":\"float\",\"min\":0.0,\"max\":1.0,\"step\":0.02}";
   j += ",{\"key\":\"oversampling\",\"name\":\"Oversampling\",\"type\":\"enum\",\"options\":[\"1x (Draft)\",\"2x\",\"4x\",\"8x\"]}";
+  j += ",{\"key\":\"multi_core\",\"name\":\"Multi-Core\",\"type\":\"enum\",\"options\":[\"Off\",\"On\"]}";
   j += ",{\"key\":\"fft_cache\",\"name\":\"FFT Cache\",\"type\":\"enum\",\"options\":[\"Off\",\"On\"]}";
   j += ",{\"key\":\"max_polyphony\",\"name\":\"Max Polyphony\",\"type\":\"int\",\"min\":1,\"max\":16}";
   j += ",{\"key\":\"max_unison\",\"name\":\"Max Unison\",\"type\":\"int\",\"min\":1,\"max\":16}";
@@ -1085,22 +1228,32 @@ static void *v2_create_instance(const char *module_dir, const char *json_default
 
   try {
     inst->synth = new VialMoveInstance();
-    plugin_log("VialMoveInstance created OK");
+    inst->synth_aux = new VialMoveInstance();
+    plugin_log("VialMoveInstance (dual-core) created OK");
   } catch (const std::exception &e) {
     char msg[256];
     snprintf(msg, sizeof(msg), "Exception creating Vial instance: %s", e.what());
     plugin_log(msg);
+    delete inst->synth_aux;
+    delete inst->synth;
     delete inst;
     return nullptr;
   } catch (...) {
     plugin_log("Unknown exception creating Vial instance");
+    delete inst->synth_aux;
+    delete inst->synth;
     delete inst;
     return nullptr;
   }
 
-  /* Configure engine for Move specs (44.1kHz, 128 frames) */
+  /* Configure engines for Move specs (44.1kHz, 128 frames) */
   inst->synth->prepare((double)MOVE_SAMPLE_RATE, MOVE_FRAMES_PER_BLOCK);
   inst->synth->setBpm(inst->bpm);
+  if (inst->synth_aux) {
+    inst->synth_aux->prepare((double)MOVE_SAMPLE_RATE, MOVE_FRAMES_PER_BLOCK);
+    inst->synth_aux->setBpm(inst->bpm);
+  }
+  start_aux_worker(inst);
 
   /* Scan and load presets */
   char patches_path[512];
@@ -1173,8 +1326,10 @@ static void v2_destroy_instance(void *instance) {
   if (!inst)
     return;
 
+  stop_aux_worker(inst);
   free(inst->ui_hierarchy_json);
   free(inst->chain_params_json);
+  delete inst->synth_aux;
   delete inst->synth;
   delete inst;
   plugin_log("Vial instance destroyed");
@@ -1205,6 +1360,8 @@ static void v2_on_midi(void *instance, const uint8_t *msg, int len, int source) 
             if (inst->sync_bpm && inst->synth) {
               inst->bpm = (float)bpm;
               inst->synth->setBpm(inst->bpm);
+              if (inst->synth_aux)
+                inst->synth_aux->setBpm(inst->bpm);
             }
           }
           inst->clock_time_sum = 0.0;
@@ -1218,7 +1375,7 @@ static void v2_on_midi(void *instance, const uint8_t *msg, int len, int source) 
     inst->last_clock_time = now;
   }
 
-  /* Octave transpose for Note On / Note Off */
+  /* Octave transpose + Dual-Core Note Allocator for Note On / Note Off */
   if (status == 0x90 || status == 0x80) {
     int note = data1 + inst->octave_transpose * 12;
     if (note < 0)
@@ -1227,11 +1384,45 @@ static void v2_on_midi(void *instance, const uint8_t *msg, int len, int source) 
       note = 127;
 
     uint8_t mod_msg[3] = {msg[0], (uint8_t)note, data2};
+    bool is_note_on = (status == 0x90 && data2 > 0);
     juce::ScopedLock l(inst->midi_lock);
-    inst->midi_queue.addEvent(juce::MidiMessage(mod_msg, len), 0);
+
+    if (inst->multi_core && inst->synth_aux && inst->worker_started && inst->max_polyphony > 2) {
+      if (is_note_on) {
+        /* Pack 2 notes onto Engine 0 first (1 full 4-wide NEON AggregateVoice),
+         * then balance voices across Engine 0 (Core 3) and Engine 1 (Core 2). */
+        int target = (inst->held_count[0] < 2 || inst->held_count[0] <= inst->held_count[1]) ? 0 : 1;
+        int prev_owner = inst->note_owner[note];
+        if (prev_owner == 0 && inst->held_count[0] > 0) inst->held_count[0]--;
+        if (prev_owner == 1 && inst->held_count[1] > 0) inst->held_count[1]--;
+        inst->note_owner[note] = (int8_t)target;
+        inst->held_count[target]++;
+        if (target == 0)
+          inst->midi_queue.addEvent(juce::MidiMessage(mod_msg, len), 0);
+        else
+          inst->midi_queue_aux.addEvent(juce::MidiMessage(mod_msg, len), 0);
+      } else {
+        int owner = inst->note_owner[note];
+        if (owner == 1) {
+          inst->midi_queue_aux.addEvent(juce::MidiMessage(mod_msg, len), 0);
+          if (inst->held_count[1] > 0) inst->held_count[1]--;
+        } else if (owner == 0) {
+          inst->midi_queue.addEvent(juce::MidiMessage(mod_msg, len), 0);
+          if (inst->held_count[0] > 0) inst->held_count[0]--;
+        } else {
+          inst->midi_queue.addEvent(juce::MidiMessage(mod_msg, len), 0);
+          inst->midi_queue_aux.addEvent(juce::MidiMessage(mod_msg, len), 0);
+        }
+        inst->note_owner[note] = -1;
+      }
+    } else {
+      inst->midi_queue.addEvent(juce::MidiMessage(mod_msg, len), 0);
+    }
   } else {
     juce::ScopedLock l(inst->midi_lock);
     inst->midi_queue.addEvent(juce::MidiMessage(msg, len), 0);
+    if (inst->synth_aux)
+      inst->midi_queue_aux.addEvent(juce::MidiMessage(msg, len), 0);
   }
 }
 
@@ -1260,10 +1451,11 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
           float b = std::clamp(st["bpm"].get<float>(), 20.0f, 300.0f);
           inst->bpm = b;
           inst->synth->setBpm(b);
+          if (inst->synth_aux) inst->synth_aux->setBpm(b);
         }
         if (st.count("volume") && st["volume"].is_number()) {
           float v = std::clamp(st["volume"].get<float>(), 0.0f, 1.0f);
-          inst->synth->setControl("volume", v * v * 7399.4404f);
+          set_control_both(inst, "volume", v * v * 7399.4404f);
         }
         for (auto it = st.begin(); it != st.end(); ++it) {
           const std::string &k = it.key();
@@ -1271,7 +1463,7 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
               k == "bpm" || k == "volume")
             continue;
           if (it.value().is_number() && inst->synth->hasControl(k)) {
-            inst->synth->setControl(k, it.value().get<float>());
+            set_control_both(inst, k, it.value().get<float>());
           }
         }
       }
@@ -1313,14 +1505,20 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
     {
       juce::ScopedLock l(inst->midi_lock);
       inst->midi_queue.clear();
+      inst->midi_queue_aux.clear();
+      memset(inst->note_owner, -1, sizeof(inst->note_owner));
+      inst->held_count[0] = 0;
+      inst->held_count[1] = 0;
     }
     inst->synth->allSoundsOff();
+    if (inst->synth_aux)
+      inst->synth_aux->allSoundsOff();
     return;
   }
 
   if (strcmp(key, "volume") == 0) {
     float v = std::clamp((float)atof(val), 0.0f, 1.0f);
-    inst->synth->setControl("volume", v * v * 7399.4404f);
+    set_control_both(inst, "volume", v * v * 7399.4404f);
     return;
   }
 
@@ -1329,6 +1527,8 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
     if (bpm >= 20.0f && bpm <= 300.0f) {
       inst->bpm = bpm;
       inst->synth->setBpm(bpm);
+      if (inst->synth_aux)
+        inst->synth_aux->setBpm(bpm);
     }
     return;
   }
@@ -1341,6 +1541,20 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
   if (strcmp(key, "oversampling") == 0) {
     inst->oversampling = std::clamp(atoi(val), 0, 3);
     inst->synth->applyOversampling(inst->oversampling);
+    if (inst->synth_aux)
+      inst->synth_aux->applyOversampling(inst->oversampling);
+    return;
+  }
+
+  if (strcmp(key, "multi_core") == 0) {
+    bool new_mc = (atoi(val) != 0);
+    if (new_mc != inst->multi_core) {
+      inst->multi_core = new_mc && inst->worker_started;
+      if (!inst->multi_core && inst->synth_aux) {
+        inst->synth_aux->allSoundsOff();
+      }
+      apply_cpu_limits(inst);
+    }
     return;
   }
 
@@ -1378,7 +1592,7 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
   /* Generic Vial parameter setter */
   if (inst->synth->hasControl(key)) {
     float v = (float)atof(val);
-    inst->synth->setControl(key, v);
+    set_control_both(inst, key, v);
     return;
   }
 }
@@ -1432,6 +1646,9 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
 
   if (strcmp(key, "oversampling") == 0)
     return snprintf(buf, buf_len, "%d", inst->oversampling);
+
+  if (strcmp(key, "multi_core") == 0)
+    return snprintf(buf, buf_len, "%d", inst->multi_core ? 1 : 0);
 
   if (strcmp(key, "fft_cache") == 0)
     return snprintf(buf, buf_len, "%d",
@@ -1529,28 +1746,55 @@ static void v2_render_block(void *instance, int16_t *out_interleaved_lr, int fra
     return;
   }
 
-  /* Thread-safe retrieval of MIDI events */
+  /* Thread-safe retrieval of MIDI events for both engines */
   juce::MidiBuffer local_midi;
+  inst->local_midi_aux.clear();
   {
     juce::ScopedLock l(inst->midi_lock);
     local_midi.addEvents(inst->midi_queue, 0, frames, 0);
     inst->midi_queue.clear();
+    if (inst->synth_aux) {
+      inst->local_midi_aux.addEvents(inst->midi_queue_aux, 0, frames, 0);
+      inst->midi_queue_aux.clear();
+    }
   }
 
-  /* Render float audio from Vial engine using pre-allocated buffer */
+  /* Kick off secondary voice engine on Core 2 ONLY if it has MIDI or is awake */
+  bool run_aux = inst->multi_core && inst->synth_aux && inst->worker_started &&
+                 (!inst->local_midi_aux.isEmpty() || !inst->synth_aux->isSleeping());
+  if (run_aux) {
+    pthread_mutex_lock(&inst->worker_mutex);
+    inst->worker_frames = frames;
+    inst->worker_has_work = true;
+    pthread_cond_signal(&inst->worker_cond);
+    pthread_mutex_unlock(&inst->worker_mutex);
+  }
+
+  /* Render primary voice engine on Core 3 (SPI thread) simultaneously */
   if (inst->float_buffer.getNumSamples() < frames) {
     inst->float_buffer.setSize(2, frames, false, false, true);
   }
   inst->float_buffer.clear();
   inst->synth->process(&inst->float_buffer, local_midi, frames);
 
-  /* Convert and interleave output with clamping */
+  /* Wait for Core 2 worker to finish if it was dispatched */
+  if (run_aux) {
+    pthread_mutex_lock(&inst->worker_mutex);
+    while (inst->worker_has_work) {
+      pthread_cond_wait(&inst->worker_done_cond, &inst->worker_mutex);
+    }
+    pthread_mutex_unlock(&inst->worker_mutex);
+  }
+
+  /* Sum stereo float outputs and interleave with clamping */
   const float *left_chan = inst->float_buffer.getReadPointer(0);
   const float *right_chan = inst->float_buffer.getReadPointer(1);
+  const float *left_aux = run_aux ? inst->float_buffer_aux.getReadPointer(0) : nullptr;
+  const float *right_aux = run_aux ? inst->float_buffer_aux.getReadPointer(1) : nullptr;
 
   for (int i = 0; i < frames; i++) {
-    float left = left_chan[i] * inst->output_gain;
-    float right = right_chan[i] * inst->output_gain;
+    float left = (left_chan[i] + (left_aux ? left_aux[i] : 0.0f)) * inst->output_gain;
+    float right = (right_chan[i] + (right_aux ? right_aux[i] : 0.0f)) * inst->output_gain;
 
     int32_t l = (int32_t)(left * 32767.0f);
     int32_t r = (int32_t)(right * 32767.0f);
