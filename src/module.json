@@ -2,7 +2,7 @@
   "id": "vial",
   "name": "Vial",
   "abbrev": "VIAL",
-  "version": "1.0.0",
+  "version": "1.0",
   "description": "Vial polyphonic wavetable synthesizer",
   "author": "Matt Tytel / Gregory Buchenberger / Schwung port",
   "license": "GPL-3.0",
