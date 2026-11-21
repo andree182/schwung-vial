@@ -310,6 +310,78 @@ public:
     creator->render();
   }
 
+  bool loadSurgeWavetableIntoOsc(int osc_index, const uint8_t *ptr, size_t avail,
+                                 size_t &consumed, float morph_pos) {
+    consumed = 0;
+    WavetableCreator *creator = getWavetableCreator(osc_index);
+    if (!creator || avail < 12)
+      return false;
+
+    uint32_t n_samples = 0;
+    uint16_t n_tables = 0;
+    uint16_t flags = 0;
+    memcpy(&n_samples, ptr + 4, 4);
+    memcpy(&n_tables, ptr + 8, 2);
+    memcpy(&flags, ptr + 10, 2);
+
+    if (n_samples < 4 || n_samples > 4096 || n_tables < 1 || n_tables > 512)
+      return false;
+
+    bool is_int16 = (flags & 4) != 0;
+    size_t sample_bytes = is_int16 ? 2 : 4;
+    size_t data_bytes = (size_t)n_samples * (size_t)n_tables * sample_bytes;
+    if (12 + data_bytes > avail)
+      return false;
+
+    consumed = 12 + data_bytes;
+    const uint8_t *pcm = ptr + 12;
+
+    creator->clear();
+    WavetableGroup *group = new WavetableGroup();
+    WaveSource *source = new WaveSource();
+
+    /* Sample up to 16 evenly spaced frames across the Surge wavetable */
+    int num_kf = std::min<int>((int)n_tables, 16);
+    for (int kf = 0; kf < num_kf; ++kf) {
+      int src_frame = (num_kf == 1) ? 0 : (kf * ((int)n_tables - 1)) / (num_kf - 1);
+      int pos = (num_kf == 1) ? 0 : (kf * (vial::kNumOscillatorWaveFrames - 1)) / (num_kf - 1);
+      source->insertNewKeyframe(pos);
+      WaveSourceKeyframe *keyframe = source->getKeyframe(kf);
+      vial::WaveFrame *wf = keyframe->wave_frame();
+
+      const uint8_t *frame_ptr = pcm + (size_t)src_frame * n_samples * sample_bytes;
+      for (int i = 0; i < vial::WaveFrame::kWaveformSize; ++i) {
+        float src_pos = ((float)i * (float)n_samples) / (float)vial::WaveFrame::kWaveformSize;
+        int idx0 = (int)src_pos % (int)n_samples;
+        int idx1 = (idx0 + 1) % (int)n_samples;
+        float frac = src_pos - std::floor(src_pos);
+
+        float s0 = 0.0f, s1 = 0.0f;
+        if (is_int16) {
+          int16_t v0, v1;
+          memcpy(&v0, frame_ptr + idx0 * 2, 2);
+          memcpy(&v1, frame_ptr + idx1 * 2, 2);
+          s0 = v0 * (1.0f / 32768.0f);
+          s1 = v1 * (1.0f / 32768.0f);
+        } else {
+          memcpy(&s0, frame_ptr + idx0 * 4, 4);
+          memcpy(&s1, frame_ptr + idx1 * 4, 4);
+        }
+        wf->time_domain[i] = s0 + frac * (s1 - s0);
+      }
+      wf->toFrequencyDomain();
+    }
+
+    group->addComponent(source);
+    creator->addGroup(group);
+    creator->render();
+
+    std::string vkey = "osc_" + std::to_string(osc_index + 1);
+    setControl(vkey + "_wave_frame",
+               std::clamp(morph_pos, 0.0f, 1.0f) * (float)(vial::kNumOscillatorWaveFrames - 1));
+    return true;
+  }
+
   bool connectModulationSafe(const std::string &src, const std::string &dst, float amount) {
     if (src.empty() || dst.empty())
       return false;
@@ -627,7 +699,9 @@ public:
     juce::ScopedLock lock(getCriticalSection());
     loadInitPreset();
 
-    // 3 Oscillators (a_osc1..3 -> osc_1..3)
+    // 3 Oscillators (a_osc1..3 -> osc_1..3), consuming any embedded Surge wavetable chunks after </patch>
+    const uint8_t *wt_cursor = reinterpret_cast<const uint8_t *>(xml_end);
+    size_t wt_remaining = (size_t)((raw + len) - xml_end);
     float noise_level = 0.0f;
     for (int o = 1; o <= 3; ++o) {
       std::string okey = sc + "osc" + std::to_string(o);
@@ -636,6 +710,17 @@ public:
       float level = std::clamp(getP(sc + "level_o" + std::to_string(o), (o == 1) ? 1.0f : 0.0f), 0.0f, 1.0f);
       int otype = (int)std::round(getP(okey + "_type", 0.0f));
 
+      bool loaded_wt = false;
+      if ((otype == 2 || otype == 7) && wt_remaining >= 12) {
+        size_t consumed = 0;
+        float morph = std::clamp(getP(okey + "_param0", 0.0f), 0.0f, 1.0f);
+        if (loadSurgeWavetableIntoOsc(o - 1, wt_cursor, wt_remaining, consumed, morph)) {
+          wt_cursor += consumed;
+          wt_remaining -= consumed;
+          loaded_wt = true;
+        }
+      }
+
       if (!muted && level > 0.001f && otype == 3) {
         // S&H Noise oscillator -> route to sample noise
         noise_level = std::max(noise_level, level * 0.5f);
@@ -643,19 +728,21 @@ public:
         continue;
       }
 
-      int helm_wave = 3; // Default Saw
-      if (otype == 1 || otype == 5 || otype == 6) {
-        helm_wave = 0; // Sine / FM2 / FM3
-      } else if (otype == 0) {
-        // Classic osc: param0 is shape (-1..1: tri -> saw -> square)
-        float shape = getP(okey + "_param0", 0.0f);
-        if (shape < -0.35f) helm_wave = 1;      // Triangle
-        else if (shape > 0.35f) helm_wave = 2;  // Square
-        else helm_wave = 3;                     // Saw
-      } else if (otype == 9) {
-        helm_wave = 1; // String -> Triangle
+      if (!loaded_wt) {
+        int helm_wave = 3; // Default Saw
+        if (otype == 1 || otype == 5 || otype == 6) {
+          helm_wave = 0; // Sine / FM2 / FM3
+        } else if (otype == 0) {
+          // Classic osc: param0 is shape (-1..1: tri -> saw -> square)
+          float shape = getP(okey + "_param0", 0.0f);
+          if (shape < -0.35f) helm_wave = 1;      // Triangle
+          else if (shape > 0.35f) helm_wave = 2;  // Square
+          else helm_wave = 3;                     // Saw
+        } else if (otype == 9) {
+          helm_wave = 1; // String -> Triangle
+        }
+        setOscillatorShape(o - 1, helm_wave);
       }
-      setOscillatorShape(o - 1, helm_wave);
 
       setControl(vkey + "_on", (!muted && level > 0.001f) ? 1.0f : 0.0f);
       setControl(vkey + "_level", std::sqrt(level));
@@ -764,6 +851,13 @@ public:
         } else if (fx_type == 3) { // Phaser
           setControl("phaser_on", 1.0f);
           setControl("phaser_dry_wet", std::clamp(getP(fxk + "_p10", 0.4f), 0.0f, 0.8f));
+        } else if (fx_type == 4) { // Rotary Speaker (Leslie vibrato/Doppler) -> Vial Chorus
+          setControl("chorus_on", 1.0f);
+          setControl("chorus_sync", 0.0f);
+          setControl("chorus_frequency", std::clamp(getP(fxk + "_p0", 2.0f), -6.0f, 3.0f));
+          setControl("chorus_mod_depth", 0.65f);
+          setControl("chorus_dry_wet", 0.7f);
+          setControl("chorus_voices", 1.0f);
         } else if (fx_type == 5) { // Distortion
           setControl("distortion_on", 1.0f);
           setControl("distortion_drive", std::clamp(getP(fxk + "_p3", 6.0f), 0.0f, 20.0f));
