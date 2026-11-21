@@ -1,23 +1,22 @@
 {
-  "title": "Helm",
+  "title": "Vial",
   "children": [
     {
       "title": "Overview",
       "lines": [
-        "Helm polyphonic",
-        "subtractive synth.",
+        "Vial polyphonic",
+        "wavetable synth",
+        "(Vital engine).",
         "",
-        "2 oscillators, 1",
-        "sub oscillator,",
-        "1 noise source,",
-        "1 multi-mode filter,",
-        "3 envelopes, and",
-        "3 LFOs.",
+        "3 wavetable oscs,",
+        "1 sampler/noise,",
+        "2 multi-mode filters,",
+        "3 envelopes, LFOs,",
+        "and 7 FX units.",
         "",
-        "Includes a step",
-        "sequencer, deep",
-        "modulation matrix,",
-        "and 5 FX units."
+        "Loads .vital/.vial,",
+        ".helm, and Surge XT",
+        ".fxp presets."
       ]
     },
     {
@@ -26,14 +25,14 @@
         {
           "title": "Knob Mapping",
           "lines": [
-            "Knob 1: Cutoff",
-            " Filter cutoff freq",
+            "Knob 1: F1 Cutoff",
+            " Filter 1 cutoff",
             "",
-            "Knob 2: Resonance",
-            " Filter resonance",
+            "Knob 2: F1 Res",
+            " Filter 1 resonance",
             "",
-            "Knob 3: Filt Env",
-            " Filt Env Depth",
+            "Knob 3: F1 Drive",
+            " Filter 1 drive",
             "",
             "Knob 4: Attack",
             "Knob 5: Decay",
@@ -46,104 +45,86 @@
           ]
         },
         {
-          "title": "Oscillators",
+          "title": "Presets",
           "lines": [
-            "Osc 1 & 2 have:",
-            " Waveform, Volume,",
-            " Transpose, Tune,",
-            " Unison Voices, and",
-            " Unison Detune.",
+            "Turn jog wheel at",
+            "root to browse.",
             "",
-            "Sub Osc has:",
-            " Waveform, Volume,",
-            " Octave, Shuffle.",
-            "",
-            "Noise/Feedback:",
-            " Noise level and",
-            " feedback controls."
+            "Use Jump to Category",
+            "to jump between:",
+            " Vial-* (.vital)",
+            " Helm-* (.helm)",
+            " Surge-* (.fxp)"
           ]
         },
         {
-          "title": "Filter",
+          "title": "Oscillators",
           "lines": [
-            "Multi-mode filter",
+            "Osc 1, 2 & 3 have:",
+            " On/Off, Level,",
+            " Transpose, Tune,",
+            " Pan, Unison Voices,",
+            " Detune, Wave Frame,",
+            " Phase/FM Distortion,",
+            " Spectral Morph, and",
+            " Routing Destination.",
+            "",
+            "Sampler / Noise:",
+            " Level, Transpose,",
+            " Tune, Pan, Loop."
+          ]
+        },
+        {
+          "title": "Filters",
+          "lines": [
+            "Filter 1 & Filter 2",
             "with controls for:",
-            " On/Off, Style,",
-            " Blend, Shelf,",
-            " Cutoff, Resonance,",
+            " On/Off, Model,",
+            " Style, Cutoff,",
+            " Resonance, Drive,",
+            " Blend, Mix,",
             " Keytrack, and",
-            " Drive."
+            " Osc/Sample inputs."
           ]
         },
         {
           "title": "Envelopes",
           "lines": [
             "3 ADSR Envelopes:",
-            " Amp Envelope",
-            " Filter Envelope",
-            " Mod Envelope",
+            " Amp Envelope (Env1)",
+            " Envelope 2",
+            " Envelope 3",
             "",
             "Adjust Attack,",
             "Decay, Sustain,",
-            "and Release for",
-            "each envelope."
+            "Release, Delay,",
+            "and Hold."
           ]
         },
         {
-          "title": "LFOs",
+          "title": "LFOs & Macros",
           "lines": [
-            "3 LFOs available:",
-            " Mono LFO 1 & 2",
-            " Poly LFO",
+            "LFO 1 & LFO 2:",
+            " Frequency, Sync,",
+            " Tempo, Sync Type,",
+            " Phase, Fade In,",
+            " Smooth Time.",
             "",
-            "Each has Waveform,",
-            "Sync (Free/Tempo),",
-            "Tempo Division,",
-            "Frequency,",
-            "Amplitude, and",
-            "Retrigger mode."
-          ]
-        },
-        {
-          "title": "Sequencer",
-          "lines": [
-            "Step Sequencer",
-            "with up to 32 steps.",
-            "",
-            "Adjust Num Steps,",
-            "Frequency, Sync,",
-            "Tempo, Smoothing,",
-            "and Retrigger.",
-            "",
-            "Edit individual",
-            "steps directly",
-            "via mapped knobs."
-          ]
-        },
-        {
-          "title": "Mod Matrix",
-          "lines": [
-            "16 modulation",
-            "routing slots.",
-            "",
-            "Configure:",
-            " - Slot Enabled",
-            " - Source selector",
-            " - Destination (70",
-            "   targets)",
-            " - Mod Amount",
-            "   (-100% to +100%)"
+            "Macros:",
+            " Macro Controls 1-4."
           ]
         },
         {
           "title": "Effects",
           "lines": [
-            "5 built-in effects:",
-            " Formant (vocal)",
-            " Distortion (drive)",
-            " Delay (echo)",
-            " Reverb (space)",
-            " Stutter (looper)",
+            "7 built-in effects:",
+            " Chorus",
+            " Flanger",
+            " Phaser",
+            " Distortion",
+            " Delay",
+            " Reverb",
+            " Compressor",
             "",
             "Enable and tweak",
             "each effect in its",
@@ -155,15 +136,19 @@
     {
       "title": "Settings",
       "lines": [
-        "Global parameters:",
-        " BPM (20 to 300)",
-        " Volume",
-        " Polyphony",
-        " Portamento",
-        " Portamento Type",
-        " Legato mode",
-        " Pitch Bend Range",
-        " Velocity Track"
+        "CPU & Engine:",
+        " Oversampling (1x-8x)",
+        " Multi-Core (Off/On)",
+        " FFT Cache (On/Off)",
+        " Max Polyphony (1-16)",
+        " Max Unison (1-16)",
+        " Bypass FX (Off/On)",
+        "",
+        "Global:",
+        " BPM & Auto BPM",
+        " Volume, Polyphony",
+        " Portamento & Legato",
+        " Pitch Bend & Vel"
       ]
     }
   ]
