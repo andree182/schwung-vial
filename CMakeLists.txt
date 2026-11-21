@@ -28,6 +28,7 @@ add_definitions(
 
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64" OR CMAKE_SYSTEM_PROCESSOR MATCHES "arm64")
     add_definitions(-D__ARM_NEON=1 -D__ARM_NEON__=1)
+    add_compile_options(-O3 -mcpu=cortex-a53 -ffast-math -fno-finite-math-only -fno-math-errno)
 endif()
 
 # Header search paths
@@ -100,5 +101,12 @@ target_link_libraries(vial-move-plugin PRIVATE
 )
 
 # Link libstdc++ and libgcc statically to avoid GLIBCXX version issues on the Move,
-# and ensure no unresolved symbols.
-target_link_options(vial-move-plugin PRIVATE "-static-libstdc++" "-static-libgcc" "-Wl,--no-undefined")
+# ensure no unresolved symbols, and hide all internal C++/JUCE symbols so Vial can
+# coexist with Helm (JUCE 5) in the same process without symbol collisions.
+target_link_options(vial-move-plugin PRIVATE
+    "-static-libstdc++"
+    "-static-libgcc"
+    "-Wl,--no-undefined"
+    "-Wl,-Bsymbolic"
+    "-Wl,--version-script=${CMAKE_CURRENT_SOURCE_DIR}/src/dsp/plugin.lds"
+)

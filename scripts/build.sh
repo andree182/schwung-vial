@@ -80,6 +80,13 @@ if [ -d "src/dsp/helm/patches" ]; then
     fi
 fi
 
+# Copy native Vial/Vital presets (e.g. presets/<Bank>/Presets/*.vital)
+if [ -d "presets" ]; then
+    echo "Copying Vial/Vital presets..."
+    mkdir -p dist/vial/vial-data/patches
+    cp -r presets/* dist/vial/vial-data/patches/
+fi
+
 # Create tarball for release
 cd dist
 tar -czvf vial-module.tar.gz vial/
