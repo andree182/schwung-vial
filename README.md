@@ -20,9 +20,10 @@ Based on [Vial](https://github.com/buchenberg/vial) (a JUCE 8 / CMake fork of [V
 ## Preset Directories & Category Naming
 
 ### Build-Time Source Directories (`./scripts/build.sh`)
-During packaging, `scripts/build.sh` populates `dist/vial/vial-data/patches/` from:
-1. **`presets/`** — Recursively copies all `*.vital`, `*.vial`, and `*.fxp` files (skipping standalone `.wav`/`.vitaltable`/`.vitallfo` files and Surge's `Templates`/`Tutorials`/`Vocoder` folders).
-2. **`src/dsp/helm/patches/Factory Presets/`** (plus `data/Move Organ.helm`) — Copies the 275 factory `.helm` presets.
+During packaging, `scripts/build.sh` populates `dist/vial/vial-data/patches/` from `presets/`:
+* **`presets/helm/`** — 275 factory `.helm` presets (including `Move Organ.helm`).
+* **`presets/surge/`** — Surge XT `.fxp` presets (excluding `Templates`, `Tutorials`, and `Vocoder`).
+* **`presets/<Bank>/`** — Any native `*.vital` / `*.vial` preset banks placed in `presets/` (skipping standalone `.wav`/`.vitaltable`/`.vitallfo` files since `.vital` presets embed wavetables and samples inline).
 
 ### Runtime Search Directories on Ableton Move
 When the plugin initializes (`v2_create_instance`), it recursively scans for `*.vital`, `*.vial`, `*.helm`, and `*.fxp` files in:

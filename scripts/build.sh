@@ -69,24 +69,14 @@ cat src/ui.js > dist/vial/ui.js
 cat build/dsp.so > dist/vial/dsp.so
 chmod +x dist/vial/dsp.so
 
-# Copy patches (clean target first so removed/filtered files don't linger)
+# Copy presets (clean target first so removed/filtered files don't linger;
+# copy only .vital/.vial/.helm/.fxp files from presets/, skipping Surge
+# Tutorials/Templates/Vocoder which require Lua or Audio-In)
 rm -rf dist/vial/vial-data/patches
-if [ -d "src/dsp/helm/patches" ]; then
-    echo "Copying factory patches..."
-    mkdir -p dist/vial/vial-data/patches
-    cp -r "src/dsp/helm/patches/Factory Presets" dist/vial/vial-data/patches/
-    if [ -f "data/Move Organ.helm" ]; then
-        mkdir -p "dist/vial/vial-data/patches/Factory Presets/Keys"
-        cp "data/Move Organ.helm" "dist/vial/vial-data/patches/Factory Presets/Keys/"
-    fi
-fi
-
-# Copy only .vital/.vial/.fxp preset files from presets/ (wavetables & samples are embedded;
-# skip Surge Tutorials/Templates/Vocoder which require Lua or Audio-In)
 if [ -d "presets" ]; then
-    echo "Copying Vial/Vital and Surge XT presets..."
+    echo "Copying presets from presets/..."
     mkdir -p dist/vial/vial-data/patches
-    (cd presets && find . -type f \( -iname "*.vital" -o -iname "*.vial" -o -iname "*.fxp" \) \
+    (cd presets && find . -type f \( -iname "*.vital" -o -iname "*.vial" -o -iname "*.helm" -o -iname "*.fxp" \) \
         ! -path "*/Templates/*" ! -path "*/Tutorials/*" ! -path "*/Vocoder/*" \
         -exec cp --parents {} ../dist/vial/vial-data/patches/ \;)
 fi
