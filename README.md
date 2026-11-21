@@ -6,15 +6,17 @@ Based on [Vial](https://github.com/buchenberg/vial) (a JUCE 8 / CMake fork of [V
 
 ## Features
 
-* **3 Wavetable Oscillators + Sampler/Noise Generator** with spectral morphing, phase/FM/RM distortion, and up to 16-voice unison per oscillator
+* **3 Wavetable Oscillators + Sampler/Noise Generator** with spectral morphing, phase/FM/RM distortion, up to 16-voice unison per oscillator, and **81 selectable wavetables** (`Preset` + 6 Vial built-in shapes + 74 multi-frame Amino wavetables)
 * **Dual Multi-Mode Filters** (Analog, Dirty, Ladder, Digital, Diode, Formant, Comb, Phaser)
-* **3 ADSR Envelopes** (with Delay & Hold) and **LFOs** (syncable to MIDI clock)
+* **3 ADSR Envelopes** (with Delay & Hold) and **LFOs** (syncable to MIDI clock, with 7 selectable LFO shapes: `Preset`, `Triangle`, `Sine`, `Saw Up`, `Saw Down`, `Square`, `Ramp`)
+* **8-Slot Live Modulation Matrix (`Slot 1–8`)** pre-populated from each preset's active modulations and editable on Move or via the Remote Web UI
 * **Built-in Effects Chain:** Chorus, Flanger, Phaser, Distortion, Delay, Reverb, Multiband Compressor
+* **Remote Web UI (`web_ui.html`):** Full browser-based control panel via Schwung Remote API (`window.schwungRemote`) with searchable preset browser, live wavetable terrain visualizers (drag horizontally to scrub `Wave Frame`), oscillators, filters, envelopes, LFOs, 8-slot modulation matrix, effects rack, and Move CPU settings
 * **Multi-Format Preset Support:**
   * Native Vital/Vial presets (`.vital`, `.vial`) — wavetables and samples are embedded directly inside each preset file
-  * On-the-fly Helm preset translation (`.helm`) — translates Helm's 2 oscillators, sub oscillator (mapped to Oscillator 3), noise, envelopes, filter, FM cross-modulation, portamento, LFOs, effects, and modulation routings
-  * On-the-fly Surge XT preset translation (`.fxp`) — parses the embedded `<patch>` XML inside `.fxp` files and translates Scene A's 3 oscillators, noise, dual filters, Amp/Filter envelopes, LFOs, FX slots, portamento/legato, and `<modrouting>` connections into Vial
-* **Full Schwung Shadow UI Hierarchy:** Navigate categories (`Jump to Category`), oscillators, sampler, filters, envelopes, LFOs, effects, macros, and CPU/engine settings directly from Move's jog wheel and 8 knobs
+  * On-the-fly Helm preset translation (`.helm`) — translates Helm's 2 oscillators, sub oscillator (mapped to Oscillator 3), noise, envelopes, filter, FM cross-modulation, portamento, LFOs (with waveform shapes), effects, and modulation routings
+  * On-the-fly Surge XT preset translation (`.fxp`) — parses the embedded `<patch>` XML and binary wavetable chunks inside `.fxp` files and translates Scene A's 3 oscillators, embedded wavetables, noise, dual filters, Amp/Filter envelopes, LFOs (with shapes), FX slots (including Rotary Speaker → Chorus), portamento/legato, and `<modrouting>` connections into Vial
+* **Full Schwung Shadow UI Hierarchy:** Navigate categories (`Jump to Category`), oscillators (with wavetable & frame selection), sampler, filters, envelopes, LFOs (with shape selection), effects, macros, 8-slot modulations, and CPU/engine settings directly from Move's jog wheel and 8 knobs
 * **Symbol-Isolated (`plugin.lds`):** Exports only `move_plugin_init_v2` so Vial (`JUCE 8`) can run side-by-side with Helm (`JUCE 5`) on parallel tracks without C++/JUCE symbol collisions
 
 ## Preset Directories & Category Naming
@@ -67,8 +69,16 @@ Requires Docker (recommended for Ubuntu 22.04 / `glibc 2.35` compatibility with 
 
 | Control | Function |
 |---------|----------|
-| **Jog wheel** | Browse presets (at root) or navigate parameter menus (`Jump to Category`, `Oscillator 1–3`, `Sampler / Noise`, `Filter 1–2`, `Amp/Env 2–3`, `LFO 1–2`, `Chorus`, `Flanger`, `Phaser`, `Distortion`, `Delay`, `Reverb`, `Compressor`, `Macros`, `Settings`) |
-| **Knobs 1–8** | Adjust the 8 mapped parameters for the active menu level (at root: `Filter 1 Cutoff`, `Resonance`, `Drive`, `Amp Attack`, `Decay`, `Sustain`, `Release`, `Volume`) |
+| **Jog wheel** | Browse presets (at root) or navigate parameter menus (`Jump to Category`, `Oscillator 1–3`, `Sampler / Noise`, `Filter 1–2`, `Amp/Env 2–3`, `LFO 1–2`, `Chorus`, `Flanger`, `Phaser`, `Distortion`, `Delay`, `Reverb`, `Compressor`, `Macros`, `Modulations`, `Settings`) |
+| **Knobs 1–8** | Adjust the 8 mapped parameters for the active menu level (at root: `Filter 1 Cutoff`, `Resonance`, `Drive`, `Amp Attack`, `Decay`, `Sustain`, `Release`, `Volume`; in `Oscillator 1–3`: Knob 7 = `Wavetable`, Knob 8 = `Wave Frame`) |
+
+## Remote Web UI
+
+Open the module's Remote Web UI from Schwung Manager (`web_ui.html`) for full browser control over Wi-Fi or USB (zero external CDN dependencies):
+
+* **Preset Browser:** Search and filter all discovered `Vial-*`, `Helm-*`, and `Surge-*` presets (`presets_index.json` generated automatically at runtime).
+* **Live Wavetable Visualizers:** Displays accurate waveforms with multi-frame terrain previews for all 74 Amino wavetables (`assets/wave-previews/00.bin`–`73.bin`), Vial's 6 built-in shapes, and each loaded preset's native wavetables (`osc_waves.bin`). Drag horizontally across any oscillator waveform to scrub `Wave Frame` (`0–255`).
+* **8-Slot Modulation Matrix:** Enable/disable slots, pick sources and destinations, and adjust bipolar amounts (`-1.00..+1.00`) in real time.
 
 ## License
 

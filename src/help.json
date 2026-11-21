@@ -61,11 +61,13 @@
           "title": "Oscillators",
           "lines": [
             "Osc 1, 2 & 3 have:",
-            " On/Off, Level,",
+            " On/Off, Wavetable",
+            " (Preset + 6 Vial +",
+            " 74 Amino tables),",
+            " Wave Frame, Level,",
             " Transpose, Tune,",
             " Pan, Unison Voices,",
-            " Detune, Wave Frame,",
-            " Phase/FM Distortion,",
+            " Detune, Phase Warp,",
             " Spectral Morph, and",
             " Routing Destination.",
             "",
@@ -105,6 +107,9 @@
           "title": "LFOs & Macros",
           "lines": [
             "LFO 1 & LFO 2:",
+            " Shape (Preset, Tri,",
+            " Sine, Saw Up/Down,",
+            " Square, Ramp),",
             " Frequency, Sync,",
             " Tempo, Sync Type,",
             " Phase, Fade In,",
@@ -112,6 +117,19 @@
             "",
             "Macros:",
             " Macro Controls 1-4."
+          ]
+        },
+        {
+          "title": "Modulations",
+          "lines": [
+            "8-slot Mod Matrix",
+            "(Slot 1 - Slot 8):",
+            " Enabled (Off/On)",
+            " Source (Envs, LFOs,",
+            "  Vel, AT, MW, Note,",
+            "  Macros 1-4)",
+            " Destination",
+            " Amount (-1..+1)"
           ]
         },
         {

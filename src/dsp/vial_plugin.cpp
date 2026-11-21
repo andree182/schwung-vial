@@ -65,6 +65,7 @@ typedef plugin_api_v2_t *(*move_plugin_init_v2_fn)(const host_api_v1_t *host);
 #include "wavetable_creator.h"
 #include "lookups/wave_frame.h"
 #include "modules/modulation_connection_processor.h"
+#include "amino_wavetables.h"
 
 using json = nlohmann::json;
 
@@ -168,6 +169,83 @@ static std::string json_escape(const std::string &s) {
   }
   return out;
 }
+
+/* Built-in Vial PredefinedWaveFrames names (indices 1..6 after 0="Preset") */
+static const char *const kVialPredefinedWaveNames[6] = {
+    "Vial Sin", "Vial Sat Sin", "Vial Triangle",
+    "Vial Square", "Vial Pulse", "Vial Saw"
+};
+static constexpr int kNumWavetableChoices = 1 + 6 + AMINO_NUM_TABLES; /* 81 */
+
+/* LFO shape options (0="Preset", 1..6=LineGenerator shapes) */
+static const char *const kLfoShapeOptions[7] = {
+    "Preset", "Triangle", "Sine", "Saw Up", "Saw Down", "Square", "Ramp"
+};
+static constexpr int kNumLfoShapeChoices = 7;
+
+/* 8-Slot Modulation Matrix Sources & Destinations */
+static constexpr int kNumModSlots = 8;
+
+static const char *const kModSources[] = {
+    "none",
+    "env_1",
+    "env_2",
+    "env_3",
+    "lfo_1",
+    "lfo_2",
+    "lfo_3",
+    "velocity",
+    "aftertouch",
+    "mod_wheel",
+    "pitch_wheel",
+    "note",
+    "macro_control_1",
+    "macro_control_2",
+    "macro_control_3",
+    "macro_control_4"
+};
+static constexpr int kNumModSources = (int)(sizeof(kModSources) / sizeof(kModSources[0]));
+
+static const char *const kModDestinations[] = {
+    "filter_1_cutoff",
+    "filter_1_resonance",
+    "filter_1_drive",
+    "filter_1_blend",
+    "filter_2_cutoff",
+    "filter_2_resonance",
+    "osc_1_level",
+    "osc_1_transpose",
+    "osc_1_tune",
+    "osc_1_pan",
+    "osc_1_wave_frame",
+    "osc_1_unison_detune",
+    "osc_1_distortion_amount",
+    "osc_1_spectral_morph_amount",
+    "osc_2_level",
+    "osc_2_transpose",
+    "osc_2_tune",
+    "osc_2_pan",
+    "osc_2_wave_frame",
+    "osc_2_unison_detune",
+    "osc_2_distortion_amount",
+    "osc_2_spectral_morph_amount",
+    "osc_3_level",
+    "osc_3_transpose",
+    "osc_3_tune",
+    "osc_3_wave_frame",
+    "sample_level",
+    "volume",
+    "voice_tune",
+    "lfo_1_frequency",
+    "lfo_2_frequency",
+    "delay_dry_wet",
+    "delay_feedback",
+    "reverb_dry_wet",
+    "reverb_decay_time",
+    "chorus_dry_wet",
+    "distortion_drive"
+};
+static constexpr int kNumModDestinations = (int)(sizeof(kModDestinations) / sizeof(kModDestinations[0]));
 
 /* =====================================================================
  * Headless Vial instance class
@@ -382,6 +460,120 @@ public:
     return true;
   }
 
+  void applyWavetableChoice(int osc_index, int wt_choice) {
+    if (osc_index < 0 || osc_index >= vial::kNumOscillators || wt_choice <= 0)
+      return;
+    juce::ScopedLock lock(getCriticalSection());
+    silent_blocks_ = 0;
+    WavetableCreator *creator = getWavetableCreator(osc_index);
+    if (!creator)
+      return;
+
+    creator->clear();
+    WavetableGroup *group = new WavetableGroup();
+    WaveSource *source = new WaveSource();
+
+    if (wt_choice >= 1 && wt_choice <= 6) {
+      source->insertNewKeyframe(0);
+      WaveSourceKeyframe *kf = source->getKeyframe(0);
+      vial::PredefinedWaveFrames::Shape shape =
+          (vial::PredefinedWaveFrames::Shape)(wt_choice - 1);
+      kf->wave_frame()->copy(vial::PredefinedWaveFrames::getWaveFrame(shape));
+    } else if (wt_choice >= 7 && wt_choice < 7 + AMINO_NUM_TABLES) {
+      int table_idx = wt_choice - 7;
+      for (int kf = 0; kf < 16; ++kf) {
+        int src_frame = (kf * (AMINO_NUM_FRAMES - 1)) / 15;
+        int pos = (kf * (vial::kNumOscillatorWaveFrames - 1)) / 15;
+        source->insertNewKeyframe(pos);
+        WaveSourceKeyframe *keyframe = source->getKeyframe(kf);
+        vial::WaveFrame *wf = keyframe->wave_frame();
+        const signed char *pcm = amino_wavetable_data[table_idx][src_frame];
+        for (int i = 0; i < vial::WaveFrame::kWaveformSize; ++i) {
+          float src_pos = ((float)i * (float)AMINO_FRAME_LEN) /
+                          (float)vial::WaveFrame::kWaveformSize;
+          int idx0 = (int)src_pos % AMINO_FRAME_LEN;
+          int idx1 = (idx0 + 1) % AMINO_FRAME_LEN;
+          float frac = src_pos - std::floor(src_pos);
+          float s0 = (float)pcm[idx0] * (1.0f / 127.0f);
+          float s1 = (float)pcm[idx1] * (1.0f / 127.0f);
+          wf->time_domain[i] = s0 + frac * (s1 - s0);
+        }
+        wf->toFrequencyDomain();
+      }
+    }
+
+    group->addComponent(source);
+    creator->addGroup(group);
+    creator->render();
+  }
+
+  bool sampleOscWaveform64(int osc_index, int frame_index, uint8_t *out64) {
+    if (osc_index < 0 || osc_index >= vial::kNumOscillators)
+      return false;
+    juce::ScopedLock lock(getCriticalSection());
+    vial::Wavetable *wt = getWavetable(osc_index);
+    if (!wt)
+      return false;
+    const vial::Wavetable::WavetableData *data = wt->getAllData();
+    if (!data || data->num_frames <= 0 || !data->wave_data)
+      return false;
+    int f = std::clamp(frame_index, 0, data->num_frames - 1);
+    const vial::mono_float *pcm = data->wave_data[f];
+    float peak = 0.0f;
+    constexpr int stride = vial::Wavetable::kWaveformSize / 64;
+    for (int i = 0; i < 64; ++i) {
+      float s = pcm[i * stride];
+      if (std::abs(s) > peak) peak = std::abs(s);
+    }
+    float norm = (peak > 1e-4f) ? (1.0f / peak) : 1.0f;
+    for (int i = 0; i < 64; ++i) {
+      float s = pcm[i * stride] * norm;
+      int v = (int)std::round(std::clamp(s, -1.0f, 1.0f) * 127.0f) + 128;
+      out64[i] = (uint8_t)std::clamp(v, 0, 255);
+    }
+    return true;
+  }
+
+  void applyLfoShapeChoice(int lfo_index, int shape_choice) {
+    if (lfo_index < 0 || lfo_index >= vial::kNumLfos || shape_choice <= 0)
+      return;
+    juce::ScopedLock lock(getCriticalSection());
+    silent_blocks_ = 0;
+    LineGenerator *lfo = getLfoSource(lfo_index);
+    if (!lfo)
+      return;
+    switch (shape_choice) {
+      case 1: lfo->initTriangle(); break;
+      case 2: lfo->initSin(); break;
+      case 3: lfo->initSawUp(); break;
+      case 4: lfo->initSawDown(); break;
+      case 5: lfo->initSquare(); break;
+      case 6: lfo->initLinear(); break;
+      default: break;
+    }
+  }
+
+  void disconnectModulationSafe(const std::string &src, const std::string &dst) {
+    if (src.empty() || dst.empty())
+      return;
+    juce::ScopedLock lock(getCriticalSection());
+    silent_blocks_ = 0;
+    disconnectModulation(src, dst);
+    processModulationChanges();
+    engine_->updateAllModulationSwitches();
+  }
+
+  void updateModulationSlot(const std::string &src, const std::string &dst, float amount) {
+    if (src.empty() || dst.empty())
+      return;
+    juce::ScopedLock lock(getCriticalSection());
+    silent_blocks_ = 0;
+    if (connectModulationSafe(src, dst, amount)) {
+      processModulationChanges();
+      engine_->updateAllModulationSwitches();
+    }
+  }
+
   bool connectModulationSafe(const std::string &src, const std::string &dst, float amount) {
     if (src.empty() || dst.empty())
       return false;
@@ -480,19 +672,28 @@ public:
     setControl("sample_level", noise_vol);
 
     // LFOs: poly_lfo -> lfo_1, mono_lfo_1 -> lfo_2, mono_lfo_2 -> lfo_3
-    auto mapHelmLfo = [&](const std::string &h_prefix, const std::string &v_prefix, bool is_mono) {
+    auto mapHelmLfo = [&](const std::string &h_prefix, const std::string &v_prefix, int lfo_idx, bool is_mono) {
       float freq = settings.value(h_prefix + "_frequency", 1.0f);
       float sync = settings.value(h_prefix + "_sync", 1.0f);
       float tempo = settings.value(h_prefix + "_tempo", 7.0f);
       float retrig = settings.value(h_prefix + "_retrigger", is_mono ? 0.0f : 1.0f);
+      int wave = (int)settings.value(h_prefix + "_waveform", 0.0f);
       setControl(v_prefix + "_frequency", std::clamp(freq, -7.0f, 9.0f));
       setControl(v_prefix + "_sync", std::clamp(sync, 0.0f, 3.0f));
       setControl(v_prefix + "_tempo", std::clamp(tempo, 0.0f, 12.0f));
       setControl(v_prefix + "_sync_type", (retrig > 0.5f) ? 0.0f : 1.0f); // 0=Trigger, 1=Sync
+      if (LineGenerator *lfo = getLfoSource(lfo_idx)) {
+        if (wave == 0) lfo->initSin();
+        else if (wave == 1) lfo->initTriangle();
+        else if (wave == 2 || (wave >= 5 && wave <= 7)) lfo->initSquare();
+        else if (wave == 3) lfo->initSawDown();
+        else if (wave == 4) lfo->initSawUp();
+        else lfo->initTriangle();
+      }
     };
-    mapHelmLfo("poly_lfo", "lfo_1", false);
-    mapHelmLfo("mono_lfo_1", "lfo_2", true);
-    mapHelmLfo("mono_lfo_2", "lfo_3", true);
+    mapHelmLfo("poly_lfo", "lfo_1", 0, false);
+    mapHelmLfo("mono_lfo_1", "lfo_2", 1, true);
+    mapHelmLfo("mono_lfo_2", "lfo_3", 2, true);
 
     // Envelopes (Helm uses quadratic time t = x^2, Vial uses quartic t = y^4 -> y = sqrt(x))
     auto helmEnvTimeToVial = [](float x) -> float {
@@ -834,6 +1035,14 @@ public:
       setControl(vk + "_sync", 0.0f); // Seconds/Hz
       int trig = (int)std::round(getP(lk + "_trigmode", 1.0f));
       setControl(vk + "_sync_type", (trig == 0) ? 1.0f : 0.0f);
+      int lshape = (int)std::round(getP(lk + "_shape", 0.0f));
+      if (LineGenerator *lfo = getLfoSource(l - 1)) {
+        if (lshape == 0) lfo->initSin();
+        else if (lshape == 1) lfo->initTriangle();
+        else if (lshape == 2) lfo->initSquare();
+        else if (lshape == 3) lfo->initSawUp();
+        else lfo->initTriangle();
+      }
     }
 
     // FX Slots (fx1..fx8 -> Vial FX chain)
@@ -1067,9 +1276,24 @@ typedef struct vial_instance_t {
   int clock_count;
   double clock_time_sum;
 
+  /* Custom Wavetable & LFO shape choices (0 = Preset) */
+  int osc_wavetable[3];
+  int lfo_shape[2];
+
+  /* 8-Slot Modulation Matrix */
+  struct mod_slot_t {
+    bool enabled;
+    int source_idx;
+    int dest_idx;
+    float amount;
+    std::string active_src;
+    std::string active_dst;
+  } mod_slots[kNumModSlots];
+
   /* Pre-built JSON strings */
   char *ui_hierarchy_json;
   char *chain_params_json;
+  char *presets_index_json;
 
   vial_instance_t()
       : float_buffer(2, MOVE_FRAMES_PER_BLOCK),
@@ -1104,8 +1328,17 @@ typedef struct vial_instance_t {
     last_clock_time = 0.0;
     clock_count = 0;
     clock_time_sum = 0.0;
+    osc_wavetable[0] = osc_wavetable[1] = osc_wavetable[2] = 0;
+    lfo_shape[0] = lfo_shape[1] = 0;
+    for (int i = 0; i < kNumModSlots; ++i) {
+      mod_slots[i].enabled = false;
+      mod_slots[i].source_idx = 0;
+      mod_slots[i].dest_idx = 0;
+      mod_slots[i].amount = 0.0f;
+    }
     ui_hierarchy_json = nullptr;
     chain_params_json = nullptr;
+    presets_index_json = nullptr;
   }
 
   ~vial_instance_t() {
@@ -1301,6 +1534,97 @@ static std::string format_category_name(const juce::File &file) {
 }
 
 /* =====================================================================
+ * Modulation Matrix Sync & Apply
+ * ===================================================================== */
+static int find_mod_source_index(const std::string &src) {
+  for (int i = 1; i < kNumModSources; ++i) {
+    if (src == kModSources[i])
+      return i;
+  }
+  return -1;
+}
+
+static int find_mod_dest_index(const std::string &dst) {
+  for (int i = 0; i < kNumModDestinations; ++i) {
+    if (dst == kModDestinations[i])
+      return i;
+  }
+  return -1;
+}
+
+static void sync_mod_slots_from_engine(vial_instance_t *inst) {
+  if (!inst || !inst->synth)
+    return;
+
+  for (int i = 0; i < kNumModSlots; ++i) {
+    inst->mod_slots[i].enabled = false;
+    inst->mod_slots[i].source_idx = 0;
+    inst->mod_slots[i].dest_idx = 0;
+    inst->mod_slots[i].amount = 0.0f;
+    inst->mod_slots[i].active_src.clear();
+    inst->mod_slots[i].active_dst.clear();
+  }
+
+  int slot = 0;
+  auto conns = inst->synth->getModulationConnections();
+  for (vial::ModulationConnection *conn : conns) {
+    if (!conn || conn->source_name.empty() || conn->destination_name.empty())
+      continue;
+    int s_idx = find_mod_source_index(conn->source_name);
+    int d_idx = find_mod_dest_index(conn->destination_name);
+    if (s_idx <= 0 || d_idx < 0)
+      continue;
+    float amt = conn->modulation_processor
+                    ? (float)conn->modulation_processor->currentBaseValue()
+                    : 0.0f;
+    if (std::abs(amt) < 1e-4f)
+      continue;
+    inst->mod_slots[slot].enabled = true;
+    inst->mod_slots[slot].source_idx = s_idx;
+    inst->mod_slots[slot].dest_idx = d_idx;
+    inst->mod_slots[slot].amount = std::clamp(amt, -1.0f, 1.0f);
+    inst->mod_slots[slot].active_src = conn->source_name;
+    inst->mod_slots[slot].active_dst = conn->destination_name;
+    slot++;
+    if (slot >= kNumModSlots)
+      break;
+  }
+}
+
+static void apply_mod_slot(vial_instance_t *inst, int slot_idx) {
+  if (!inst || !inst->synth || slot_idx < 0 || slot_idx >= kNumModSlots)
+    return;
+
+  auto &slot = inst->mod_slots[slot_idx];
+  std::string new_src = (slot.enabled && slot.source_idx > 0 && slot.source_idx < kNumModSources)
+                            ? kModSources[slot.source_idx]
+                            : "";
+  std::string new_dst = (slot.dest_idx >= 0 && slot.dest_idx < kNumModDestinations)
+                            ? kModDestinations[slot.dest_idx]
+                            : "";
+
+  /* Disconnect previous connection if source/dest changed or slot disabled */
+  if (!slot.active_src.empty() && !slot.active_dst.empty()) {
+    if (new_src != slot.active_src || new_dst != slot.active_dst) {
+      inst->synth->disconnectModulationSafe(slot.active_src, slot.active_dst);
+      if (inst->synth_aux)
+        inst->synth_aux->disconnectModulationSafe(slot.active_src, slot.active_dst);
+      slot.active_src.clear();
+      slot.active_dst.clear();
+    }
+  }
+
+  /* Connect or update active connection */
+  if (!new_src.empty() && !new_dst.empty()) {
+    inst->synth->updateModulationSlot(new_src, new_dst, slot.amount);
+    if (inst->synth_aux)
+      inst->synth_aux->updateModulationSlot(new_src, new_dst, slot.amount);
+    slot.active_src = new_src;
+    slot.active_dst = new_dst;
+  }
+}
+
+/* =====================================================================
  * Preset loading
  * ===================================================================== */
 static void load_preset_by_index(vial_instance_t *inst, int idx) {
@@ -1351,11 +1675,33 @@ static void load_preset_by_index(vial_instance_t *inst, int idx) {
       inst->held_count[0] = 0;
       inst->held_count[1] = 0;
     }
+    inst->osc_wavetable[0] = inst->osc_wavetable[1] = inst->osc_wavetable[2] = 0;
+    inst->lfo_shape[0] = inst->lfo_shape[1] = 0;
+    sync_mod_slots_from_engine(inst);
     snapshot_fx_state(inst);
     apply_cpu_limits(inst);
     inst->current_preset = idx;
     strncpy(inst->preset_name, entry.name.c_str(), sizeof(inst->preset_name) - 1);
     inst->preset_name[sizeof(inst->preset_name) - 1] = '\0';
+
+    /* Write compact 3-osc x 16-frame x 64-sample preview for Remote Web UI */
+    if (inst->module_dir[0] != '\0') {
+      uint8_t preview[3 * 16 * 64];
+      memset(preview, 128, sizeof(preview));
+      for (int o = 0; o < 3; ++o) {
+        for (int f = 0; f < 16; ++f) {
+          int frame_idx = (f * (vial::kNumOscillatorWaveFrames - 1)) / 15;
+          inst->synth->sampleOscWaveform64(o, frame_idx, &preview[(o * 16 + f) * 64]);
+        }
+      }
+      char wp[512];
+      snprintf(wp, sizeof(wp), "%s/osc_waves.bin", inst->module_dir);
+      FILE *fp = fopen(wp, "wb");
+      if (fp) {
+        fwrite(preview, 1, sizeof(preview), fp);
+        fclose(fp);
+      }
+    }
 
     char msg[256];
     snprintf(msg, sizeof(msg), "Loaded preset [%d]: %s (%s)",
@@ -1393,8 +1739,50 @@ static void scan_directory_presets(const juce::File &dir,
 }
 
 /* =====================================================================
- * JSON builders for ui_hierarchy and chain_params
+ * JSON builders for ui_hierarchy, chain_params, and presets_index
  * ===================================================================== */
+static std::string get_mod_sources_options_json() {
+  std::string s = "[";
+  for (int i = 0; i < kNumModSources; ++i) {
+    if (i > 0) s += ",";
+    s += "\"" + json_escape(kModSources[i]) + "\"";
+  }
+  s += "]";
+  return s;
+}
+
+static std::string get_mod_destinations_options_json() {
+  std::string s = "[";
+  for (int i = 0; i < kNumModDestinations; ++i) {
+    if (i > 0) s += ",";
+    s += "\"" + json_escape(kModDestinations[i]) + "\"";
+  }
+  s += "]";
+  return s;
+}
+
+static std::string get_wavetable_options_json() {
+  std::string s = "[\"Preset\"";
+  for (int i = 0; i < 6; ++i) {
+    s += ",\"" + json_escape(kVialPredefinedWaveNames[i]) + "\"";
+  }
+  for (int i = 0; i < AMINO_NUM_TABLES; ++i) {
+    s += ",\"" + json_escape(amino_table_names[i]) + "\"";
+  }
+  s += "]";
+  return s;
+}
+
+static std::string get_lfo_shape_options_json() {
+  std::string s = "[";
+  for (int i = 0; i < kNumLfoShapeChoices; ++i) {
+    if (i > 0) s += ",";
+    s += "\"" + json_escape(kLfoShapeOptions[i]) + "\"";
+  }
+  s += "]";
+  return s;
+}
+
 static void build_ui_hierarchy(vial_instance_t *inst) {
   std::string j =
       "{"
@@ -1436,6 +1824,7 @@ static void build_ui_hierarchy(vial_instance_t *inst) {
               "{\"level\":\"reverb\",\"label\":\"Reverb\"},"
               "{\"level\":\"compressor\",\"label\":\"Compressor\"},"
               "{\"level\":\"macros\",\"label\":\"Macros\"},"
+              "{\"level\":\"modulations\",\"label\":\"Modulations\"},"
               "{\"level\":\"settings\",\"label\":\"Settings\"}"
             "]"
           "},"
@@ -1451,27 +1840,27 @@ static void build_ui_hierarchy(vial_instance_t *inst) {
           "\"osc1\":{"
             "\"children\":null,"
             "\"knobs\":[\"osc_1_on\",\"osc_1_level\",\"osc_1_transpose\",\"osc_1_tune\","
-              "\"osc_1_unison_voices\",\"osc_1_unison_detune\",\"osc_1_wave_frame\",\"osc_1_pan\"],"
-            "\"params\":[\"osc_1_on\",\"osc_1_level\",\"osc_1_transpose\",\"osc_1_tune\",\"osc_1_pan\","
-              "\"osc_1_unison_voices\",\"osc_1_unison_detune\",\"osc_1_wave_frame\","
+              "\"osc_1_unison_voices\",\"osc_1_unison_detune\",\"osc_1_wavetable\",\"osc_1_wave_frame\"],"
+            "\"params\":[\"osc_1_on\",\"osc_1_wavetable\",\"osc_1_wave_frame\",\"osc_1_level\",\"osc_1_transpose\",\"osc_1_tune\",\"osc_1_pan\","
+              "\"osc_1_unison_voices\",\"osc_1_unison_detune\","
               "\"osc_1_distortion_type\",\"osc_1_distortion_amount\","
               "\"osc_1_spectral_morph_type\",\"osc_1_spectral_morph_amount\",\"osc_1_destination\"]"
           "},"
           "\"osc2\":{"
             "\"children\":null,"
             "\"knobs\":[\"osc_2_on\",\"osc_2_level\",\"osc_2_transpose\",\"osc_2_tune\","
-              "\"osc_2_unison_voices\",\"osc_2_unison_detune\",\"osc_2_wave_frame\",\"osc_2_pan\"],"
-            "\"params\":[\"osc_2_on\",\"osc_2_level\",\"osc_2_transpose\",\"osc_2_tune\",\"osc_2_pan\","
-              "\"osc_2_unison_voices\",\"osc_2_unison_detune\",\"osc_2_wave_frame\","
+              "\"osc_2_unison_voices\",\"osc_2_unison_detune\",\"osc_2_wavetable\",\"osc_2_wave_frame\"],"
+            "\"params\":[\"osc_2_on\",\"osc_2_wavetable\",\"osc_2_wave_frame\",\"osc_2_level\",\"osc_2_transpose\",\"osc_2_tune\",\"osc_2_pan\","
+              "\"osc_2_unison_voices\",\"osc_2_unison_detune\","
               "\"osc_2_distortion_type\",\"osc_2_distortion_amount\","
               "\"osc_2_spectral_morph_type\",\"osc_2_spectral_morph_amount\",\"osc_2_destination\"]"
           "},"
           "\"osc3\":{"
             "\"children\":null,"
             "\"knobs\":[\"osc_3_on\",\"osc_3_level\",\"osc_3_transpose\",\"osc_3_tune\","
-              "\"osc_3_unison_voices\",\"osc_3_unison_detune\",\"osc_3_wave_frame\",\"osc_3_pan\"],"
-            "\"params\":[\"osc_3_on\",\"osc_3_level\",\"osc_3_transpose\",\"osc_3_tune\",\"osc_3_pan\","
-              "\"osc_3_unison_voices\",\"osc_3_unison_detune\",\"osc_3_wave_frame\","
+              "\"osc_3_unison_voices\",\"osc_3_unison_detune\",\"osc_3_wavetable\",\"osc_3_wave_frame\"],"
+            "\"params\":[\"osc_3_on\",\"osc_3_wavetable\",\"osc_3_wave_frame\",\"osc_3_level\",\"osc_3_transpose\",\"osc_3_tune\",\"osc_3_pan\","
+              "\"osc_3_unison_voices\",\"osc_3_unison_detune\","
               "\"osc_3_distortion_type\",\"osc_3_distortion_amount\","
               "\"osc_3_spectral_morph_type\",\"osc_3_spectral_morph_amount\",\"osc_3_destination\"]"
           "},"
@@ -1517,13 +1906,13 @@ static void build_ui_hierarchy(vial_instance_t *inst) {
           "},"
           "\"lfo1\":{"
             "\"children\":null,"
-            "\"knobs\":[\"lfo_1_frequency\",\"lfo_1_sync\",\"lfo_1_tempo\",\"lfo_1_sync_type\",\"lfo_1_phase\",\"lfo_1_fade_time\",\"lfo_1_smooth_time\"],"
-            "\"params\":[\"lfo_1_frequency\",\"lfo_1_sync\",\"lfo_1_tempo\",\"lfo_1_sync_type\",\"lfo_1_phase\",\"lfo_1_fade_time\",\"lfo_1_smooth_time\"]"
+            "\"knobs\":[\"lfo_1_shape\",\"lfo_1_frequency\",\"lfo_1_sync\",\"lfo_1_tempo\",\"lfo_1_sync_type\",\"lfo_1_phase\",\"lfo_1_fade_time\",\"lfo_1_smooth_time\"],"
+            "\"params\":[\"lfo_1_shape\",\"lfo_1_frequency\",\"lfo_1_sync\",\"lfo_1_tempo\",\"lfo_1_sync_type\",\"lfo_1_phase\",\"lfo_1_fade_time\",\"lfo_1_smooth_time\"]"
           "},"
           "\"lfo2\":{"
             "\"children\":null,"
-            "\"knobs\":[\"lfo_2_frequency\",\"lfo_2_sync\",\"lfo_2_tempo\",\"lfo_2_sync_type\",\"lfo_2_phase\",\"lfo_2_fade_time\",\"lfo_2_smooth_time\"],"
-            "\"params\":[\"lfo_2_frequency\",\"lfo_2_sync\",\"lfo_2_tempo\",\"lfo_2_sync_type\",\"lfo_2_phase\",\"lfo_2_fade_time\",\"lfo_2_smooth_time\"]"
+            "\"knobs\":[\"lfo_2_shape\",\"lfo_2_frequency\",\"lfo_2_sync\",\"lfo_2_tempo\",\"lfo_2_sync_type\",\"lfo_2_phase\",\"lfo_2_fade_time\",\"lfo_2_smooth_time\"],"
+            "\"params\":[\"lfo_2_shape\",\"lfo_2_frequency\",\"lfo_2_sync\",\"lfo_2_tempo\",\"lfo_2_sync_type\",\"lfo_2_phase\",\"lfo_2_fade_time\",\"lfo_2_smooth_time\"]"
           "},"
           "\"chorus\":{"
             "\"children\":null,"
@@ -1565,6 +1954,39 @@ static void build_ui_hierarchy(vial_instance_t *inst) {
             "\"knobs\":[\"macro_control_1\",\"macro_control_2\",\"macro_control_3\",\"macro_control_4\"],"
             "\"params\":[\"macro_control_1\",\"macro_control_2\",\"macro_control_3\",\"macro_control_4\"]"
           "},"
+          "\"modulations\":{"
+            "\"children\":null,"
+            "\"knobs\":[],"
+            "\"params\":[";
+
+  for (int i = 0; i < kNumModSlots; ++i) {
+    char buf[128];
+    snprintf(buf, sizeof(buf), "%s{\"level\":\"mod_%d\",\"label\":\"Slot %d\"}",
+             (i > 0) ? "," : "", i, i + 1);
+    j += buf;
+  }
+  j += "]},";
+
+  std::string src_opts = get_mod_sources_options_json();
+  std::string dst_opts = get_mod_destinations_options_json();
+  for (int i = 0; i < kNumModSlots; ++i) {
+    char buf[2048];
+    snprintf(buf, sizeof(buf),
+             "\"mod_%d\":{"
+               "\"children\":null,"
+               "\"knobs\":[\"mod_%d_enable\",\"mod_%d_source\",\"mod_%d_dest\",\"mod_%d_amount\"],"
+               "\"params\":["
+                 "{\"key\":\"mod_%d_enable\",\"name\":\"Enabled\",\"type\":\"enum\",\"options\":[\"Off\",\"On\"]},"
+                 "{\"key\":\"mod_%d_source\",\"name\":\"Source\",\"type\":\"enum\",\"options\":%s},"
+                 "{\"key\":\"mod_%d_dest\",\"name\":\"Destination\",\"type\":\"enum\",\"options\":%s},"
+                 "{\"key\":\"mod_%d_amount\",\"name\":\"Amount\",\"type\":\"float\",\"min\":-1.0,\"max\":1.0,\"step\":0.02}"
+               "]"
+             "},",
+             i, i, i, i, i, i, i, src_opts.c_str(), i, dst_opts.c_str(), i);
+    j += buf;
+  }
+
+  j +=
           "\"settings\":{"
             "\"children\":null,"
             "\"knobs\":[\"oversampling\",\"multi_core\",\"fft_cache\",\"max_polyphony\",\"max_unison\",\"fx_bypass\",\"volume\",\"bpm\"],"
@@ -1584,6 +2006,9 @@ static void build_ui_hierarchy(vial_instance_t *inst) {
 static void build_chain_params(vial_instance_t *inst) {
   std::string j = "[";
   j += "{\"key\":\"preset\",\"name\":\"Preset\",\"type\":\"int\",\"min\":0,\"max\":9999}";
+  j += ",{\"key\":\"preset_count\",\"name\":\"Preset Count\",\"type\":\"int\",\"min\":0,\"max\":9999,\"access\":\"read\"}";
+  j += ",{\"key\":\"preset_name\",\"name\":\"Preset Name\",\"type\":\"string\",\"access\":\"read\"}";
+  j += ",{\"key\":\"bank_name\",\"name\":\"Category\",\"type\":\"string\",\"access\":\"read\"}";
   j += ",{\"key\":\"octave_transpose\",\"name\":\"Octave\",\"type\":\"int\",\"min\":-3,\"max\":3}";
   j += ",{\"key\":\"bpm\",\"name\":\"BPM\",\"type\":\"int\",\"min\":20,\"max\":300}";
   j += ",{\"key\":\"sync_bpm\",\"name\":\"Auto BPM\",\"type\":\"enum\",\"options\":[\"Off\",\"On\"]}";
@@ -1594,6 +2019,26 @@ static void build_chain_params(vial_instance_t *inst) {
   j += ",{\"key\":\"max_polyphony\",\"name\":\"Max Polyphony\",\"type\":\"int\",\"min\":1,\"max\":16}";
   j += ",{\"key\":\"max_unison\",\"name\":\"Max Unison\",\"type\":\"int\",\"min\":1,\"max\":16}";
   j += ",{\"key\":\"fx_bypass\",\"name\":\"Bypass FX\",\"type\":\"enum\",\"options\":[\"Off\",\"On\"]}";
+
+  std::string wt_opts = get_wavetable_options_json();
+  for (int o = 1; o <= 3; ++o) {
+    char buf[128];
+    snprintf(buf, sizeof(buf),
+             ",{\"key\":\"osc_%d_wavetable\",\"name\":\"Osc %d Wavetable\",\"type\":\"enum\",\"options\":",
+             o, o);
+    j += buf;
+    j += wt_opts + "}";
+  }
+
+  std::string lfo_opts = get_lfo_shape_options_json();
+  for (int l = 1; l <= 2; ++l) {
+    char buf[128];
+    snprintf(buf, sizeof(buf),
+             ",{\"key\":\"lfo_%d_shape\",\"name\":\"LFO %d Shape\",\"type\":\"enum\",\"options\":",
+             l, l);
+    j += buf;
+    j += lfo_opts + "}";
+  }
 
   size_t num_ui_params = sizeof(kUiVialParams) / sizeof(kUiVialParams[0]);
   for (size_t i = 0; i < num_ui_params; ++i) {
@@ -1635,6 +2080,17 @@ static void build_chain_params(vial_instance_t *inst) {
     }
   }
 
+  for (int i = 0; i < kNumModSlots; ++i) {
+    char buf[512];
+    snprintf(buf, sizeof(buf),
+             ",{\"key\":\"mod_%d_enable\",\"name\":\"Mod %d On\",\"type\":\"int\",\"min\":0,\"max\":1}"
+             ",{\"key\":\"mod_%d_source\",\"name\":\"Mod %d Src\",\"type\":\"int\",\"min\":0,\"max\":%d}"
+             ",{\"key\":\"mod_%d_dest\",\"name\":\"Mod %d Dst\",\"type\":\"int\",\"min\":0,\"max\":%d}"
+             ",{\"key\":\"mod_%d_amount\",\"name\":\"Mod %d Amt\",\"type\":\"float\",\"min\":-1.0,\"max\":1.0,\"step\":0.02}",
+             i, i + 1, i, i + 1, kNumModSources - 1, i, i + 1, kNumModDestinations - 1, i, i + 1);
+    j += buf;
+  }
+
   j += "]";
   free(inst->chain_params_json);
   inst->chain_params_json = strdup(j.c_str());
@@ -1642,6 +2098,36 @@ static void build_chain_params(vial_instance_t *inst) {
   char msg[128];
   snprintf(msg, sizeof(msg), "Built chain_params (%d bytes)", (int)j.size());
   plugin_log(msg);
+}
+
+static void build_presets_index(vial_instance_t *inst) {
+  std::string j = "{\"categories\":[";
+  for (size_t c = 0; c < inst->categories.size(); ++c) {
+    if (c > 0) j += ",";
+    j += "{\"name\":\"" + json_escape(inst->categories[c].name) +
+         "\",\"first\":" + std::to_string(inst->categories[c].first_idx) + "}";
+  }
+  j += "],\"presets\":[";
+  for (int i = 0; i < inst->preset_count; ++i) {
+    if (i > 0) j += ",";
+    j += "{\"i\":" + std::to_string(i) +
+         ",\"name\":\"" + json_escape(inst->patches[i].name) +
+         "\",\"cat\":\"" + json_escape(inst->patches[i].category) + "\"}";
+  }
+  j += "]}";
+
+  free(inst->presets_index_json);
+  inst->presets_index_json = strdup(j.c_str());
+
+  if (inst->module_dir[0] != '\0') {
+    char index_path[512];
+    snprintf(index_path, sizeof(index_path), "%s/presets_index.json", inst->module_dir);
+    FILE *fp = fopen(index_path, "wb");
+    if (fp) {
+      fwrite(j.data(), 1, j.size(), fp);
+      fclose(fp);
+    }
+  }
 }
 
 /* =====================================================================
@@ -1762,6 +2248,7 @@ static void *v2_create_instance(const char *module_dir, const char *json_default
 
   build_ui_hierarchy(inst);
   build_chain_params(inst);
+  build_presets_index(inst);
   return inst;
 }
 
@@ -1773,6 +2260,7 @@ static void v2_destroy_instance(void *instance) {
   stop_aux_worker(inst);
   free(inst->ui_hierarchy_json);
   free(inst->chain_params_json);
+  free(inst->presets_index_json);
   delete inst->synth_aux;
   delete inst->synth;
   delete inst;
@@ -1870,6 +2358,36 @@ static void v2_on_midi(void *instance, const uint8_t *msg, int len, int source) 
   }
 }
 
+static int parse_wavetable_choice(const char *val) {
+  if (!val || !val[0])
+    return 0;
+  if ((val[0] >= '0' && val[0] <= '9') || val[0] == '-')
+    return std::clamp(atoi(val), 0, kNumWavetableChoices - 1);
+  if (strcmp(val, "Preset") == 0)
+    return 0;
+  for (int i = 0; i < 6; ++i) {
+    if (strcmp(val, kVialPredefinedWaveNames[i]) == 0)
+      return 1 + i;
+  }
+  for (int i = 0; i < AMINO_NUM_TABLES; ++i) {
+    if (strcmp(val, amino_table_names[i]) == 0)
+      return 7 + i;
+  }
+  return 0;
+}
+
+static int parse_lfo_shape_choice(const char *val) {
+  if (!val || !val[0])
+    return 0;
+  if ((val[0] >= '0' && val[0] <= '9') || val[0] == '-')
+    return std::clamp(atoi(val), 0, kNumLfoShapeChoices - 1);
+  for (int i = 0; i < kNumLfoShapeChoices; ++i) {
+    if (strcmp(val, kLfoShapeOptions[i]) == 0)
+      return i;
+  }
+  return 0;
+}
+
 static void v2_set_param(void *instance, const char *key, const char *val) {
   vial_instance_t *inst = (vial_instance_t *)instance;
   if (!inst || !inst->synth || !key || !val)
@@ -1900,6 +2418,51 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
         if (st.count("volume") && st["volume"].is_number()) {
           float v = std::clamp(st["volume"].get<float>(), 0.0f, 1.0f);
           set_control_both(inst, "volume", v * v * 7399.4404f);
+        }
+        for (int o = 0; o < 3; ++o) {
+          std::string wk = "osc_" + std::to_string(o + 1) + "_wavetable";
+          if (st.count(wk) && st[wk].is_number()) {
+            int wt = std::clamp(st[wk].get<int>(), 0, kNumWavetableChoices - 1);
+            inst->osc_wavetable[o] = wt;
+            if (wt > 0) {
+              inst->synth->applyWavetableChoice(o, wt);
+              if (inst->synth_aux) inst->synth_aux->applyWavetableChoice(o, wt);
+            }
+          }
+        }
+        for (int l = 0; l < 2; ++l) {
+          std::string lk = "lfo_" + std::to_string(l + 1) + "_shape";
+          if (st.count(lk) && st[lk].is_number()) {
+            int sh = std::clamp(st[lk].get<int>(), 0, kNumLfoShapeChoices - 1);
+            inst->lfo_shape[l] = sh;
+            if (sh > 0) {
+              inst->synth->applyLfoShapeChoice(l, sh);
+              if (inst->synth_aux) inst->synth_aux->applyLfoShapeChoice(l, sh);
+            }
+          }
+        }
+        for (int i = 0; i < kNumModSlots; ++i) {
+          std::string pfx = "mod_" + std::to_string(i) + "_";
+          bool mod_changed = false;
+          if (st.count(pfx + "enable") && st[pfx + "enable"].is_number()) {
+            inst->mod_slots[i].enabled = (st[pfx + "enable"].get<int>() != 0);
+            mod_changed = true;
+          }
+          if (st.count(pfx + "source") && st[pfx + "source"].is_number()) {
+            inst->mod_slots[i].source_idx = std::clamp(st[pfx + "source"].get<int>(), 0, kNumModSources - 1);
+            mod_changed = true;
+          }
+          if (st.count(pfx + "dest") && st[pfx + "dest"].is_number()) {
+            inst->mod_slots[i].dest_idx = std::clamp(st[pfx + "dest"].get<int>(), 0, kNumModDestinations - 1);
+            mod_changed = true;
+          }
+          if (st.count(pfx + "amount") && st[pfx + "amount"].is_number()) {
+            inst->mod_slots[i].amount = std::clamp(st[pfx + "amount"].get<float>(), -1.0f, 1.0f);
+            mod_changed = true;
+          }
+          if (mod_changed) {
+            apply_mod_slot(inst, i);
+          }
         }
         for (auto it = st.begin(); it != st.end(); ++it) {
           const std::string &k = it.key();
@@ -1978,7 +2541,7 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
   }
 
   if (strcmp(key, "sync_bpm") == 0) {
-    inst->sync_bpm = (atoi(val) != 0);
+    inst->sync_bpm = (atoi(val) != 0 || strcmp(val, "On") == 0);
     return;
   }
 
@@ -1991,7 +2554,7 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
   }
 
   if (strcmp(key, "multi_core") == 0) {
-    bool new_mc = (atoi(val) != 0);
+    bool new_mc = (atoi(val) != 0 || strcmp(val, "On") == 0);
     if (new_mc != inst->multi_core) {
       inst->multi_core = new_mc && inst->worker_started;
       if (!inst->multi_core && inst->synth_aux) {
@@ -2003,7 +2566,7 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
   }
 
   if (strcmp(key, "fft_cache") == 0) {
-    bool enabled = (atoi(val) != 0);
+    bool enabled = (atoi(val) != 0 || strcmp(val, "On") == 0);
     juce::dsp::fftCacheEnabled().store(enabled, std::memory_order_relaxed);
     plugin_log(enabled ? "FFT Cache enabled" : "FFT Cache disabled");
     return;
@@ -2022,7 +2585,7 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
   }
 
   if (strcmp(key, "fx_bypass") == 0) {
-    bool new_bypass = (atoi(val) != 0);
+    bool new_bypass = (atoi(val) != 0 || strcmp(val, "On") == 0);
     if (new_bypass != inst->fx_bypass) {
       if (new_bypass) {
         snapshot_fx_state(inst);
@@ -2031,6 +2594,77 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
       apply_fx_bypass(inst);
     }
     return;
+  }
+
+  /* Oscillator wavetable selector (osc_1_wavetable, osc_2_wavetable, osc_3_wavetable) */
+  if (strcmp(key, "osc_1_wavetable") == 0 ||
+      strcmp(key, "osc_2_wavetable") == 0 ||
+      strcmp(key, "osc_3_wavetable") == 0) {
+    int osc_idx = key[4] - '1';
+    int wt = parse_wavetable_choice(val);
+    inst->osc_wavetable[osc_idx] = wt;
+    if (wt > 0) {
+      inst->synth->applyWavetableChoice(osc_idx, wt);
+      if (inst->synth_aux)
+        inst->synth_aux->applyWavetableChoice(osc_idx, wt);
+    }
+    return;
+  }
+
+  /* LFO shape selector (lfo_1_shape, lfo_2_shape) */
+  if (strcmp(key, "lfo_1_shape") == 0 || strcmp(key, "lfo_2_shape") == 0) {
+    int lfo_idx = key[4] - '1';
+    int sh = parse_lfo_shape_choice(val);
+    inst->lfo_shape[lfo_idx] = sh;
+    if (sh > 0) {
+      inst->synth->applyLfoShapeChoice(lfo_idx, sh);
+      if (inst->synth_aux)
+        inst->synth_aux->applyLfoShapeChoice(lfo_idx, sh);
+    }
+    return;
+  }
+
+  /* 8-Slot Modulation Matrix (mod_0..mod_7) */
+  if (strncmp(key, "mod_", 4) == 0) {
+    int slot_idx = -1;
+    char param_name[32] = {0};
+    if (sscanf(key, "mod_%d_%31s", &slot_idx, param_name) == 2 &&
+        slot_idx >= 0 && slot_idx < kNumModSlots) {
+      if (strcmp(param_name, "enable") == 0) {
+        inst->mod_slots[slot_idx].enabled = (atoi(val) != 0 || strcmp(val, "On") == 0);
+        apply_mod_slot(inst, slot_idx);
+        return;
+      }
+      if (strcmp(param_name, "source") == 0) {
+        int s_idx = 0;
+        if ((val[0] >= '0' && val[0] <= '9') || val[0] == '-') {
+          s_idx = std::clamp(atoi(val), 0, kNumModSources - 1);
+        } else {
+          int found = find_mod_source_index(val);
+          s_idx = (found >= 0) ? found : 0;
+        }
+        inst->mod_slots[slot_idx].source_idx = s_idx;
+        apply_mod_slot(inst, slot_idx);
+        return;
+      }
+      if (strcmp(param_name, "dest") == 0) {
+        int d_idx = 0;
+        if ((val[0] >= '0' && val[0] <= '9') || val[0] == '-') {
+          d_idx = std::clamp(atoi(val), 0, kNumModDestinations - 1);
+        } else {
+          int found = find_mod_dest_index(val);
+          d_idx = (found >= 0) ? found : 0;
+        }
+        inst->mod_slots[slot_idx].dest_idx = d_idx;
+        apply_mod_slot(inst, slot_idx);
+        return;
+      }
+      if (strcmp(param_name, "amount") == 0) {
+        inst->mod_slots[slot_idx].amount = std::clamp((float)atof(val), -1.0f, 1.0f);
+        apply_mod_slot(inst, slot_idx);
+        return;
+      }
+    }
   }
 
   /* Generic Vial parameter setter */
@@ -2051,9 +2685,22 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
     float vial_vol = inst->synth->getControl("volume", 5473.0404f);
     float ui_vol = std::sqrt(std::clamp(vial_vol / 7399.4404f, 0.0f, 1.0f));
     offset += snprintf(buf + offset, buf_len - offset,
-                       "{\"preset\":%d,\"octave_transpose\":%d,\"sync_bpm\":%d,\"bpm\":%.2f,\"volume\":%.4f",
+                       "{\"preset\":%d,\"octave_transpose\":%d,\"sync_bpm\":%d,\"bpm\":%.2f,\"volume\":%.4f"
+                       ",\"osc_1_wavetable\":%d,\"osc_2_wavetable\":%d,\"osc_3_wavetable\":%d"
+                       ",\"lfo_1_shape\":%d,\"lfo_2_shape\":%d",
                        inst->current_preset, inst->octave_transpose,
-                       inst->sync_bpm ? 1 : 0, inst->bpm, ui_vol);
+                       inst->sync_bpm ? 1 : 0, inst->bpm, ui_vol,
+                       inst->osc_wavetable[0], inst->osc_wavetable[1], inst->osc_wavetable[2],
+                       inst->lfo_shape[0], inst->lfo_shape[1]);
+
+    for (int i = 0; i < kNumModSlots && offset < buf_len - 128; ++i) {
+      offset += snprintf(buf + offset, buf_len - offset,
+                         ",\"mod_%d_enable\":%d,\"mod_%d_source\":%d,\"mod_%d_dest\":%d,\"mod_%d_amount\":%.4f",
+                         i, inst->mod_slots[i].enabled ? 1 : 0,
+                         i, inst->mod_slots[i].source_idx,
+                         i, inst->mod_slots[i].dest_idx,
+                         i, inst->mod_slots[i].amount);
+    }
 
     size_t num_ui_params = sizeof(kUiVialParams) / sizeof(kUiVialParams[0]);
     for (size_t i = 0; i < num_ui_params && offset < buf_len - 96; ++i) {
@@ -2098,6 +2745,34 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
     return snprintf(buf, buf_len, "%d",
                     juce::dsp::fftCacheEnabled().load(std::memory_order_relaxed) ? 1 : 0);
 
+  if (strcmp(key, "osc_1_wavetable") == 0 ||
+      strcmp(key, "osc_2_wavetable") == 0 ||
+      strcmp(key, "osc_3_wavetable") == 0) {
+    int osc_idx = key[4] - '1';
+    return snprintf(buf, buf_len, "%d", inst->osc_wavetable[osc_idx]);
+  }
+
+  if (strcmp(key, "lfo_1_shape") == 0 || strcmp(key, "lfo_2_shape") == 0) {
+    int lfo_idx = key[4] - '1';
+    return snprintf(buf, buf_len, "%d", inst->lfo_shape[lfo_idx]);
+  }
+
+  if (strncmp(key, "mod_", 4) == 0) {
+    int slot_idx = -1;
+    char param_name[32] = {0};
+    if (sscanf(key, "mod_%d_%31s", &slot_idx, param_name) == 2 &&
+        slot_idx >= 0 && slot_idx < kNumModSlots) {
+      if (strcmp(param_name, "enable") == 0)
+        return snprintf(buf, buf_len, "%d", inst->mod_slots[slot_idx].enabled ? 1 : 0);
+      if (strcmp(param_name, "source") == 0)
+        return snprintf(buf, buf_len, "%d", inst->mod_slots[slot_idx].source_idx);
+      if (strcmp(param_name, "dest") == 0)
+        return snprintf(buf, buf_len, "%d", inst->mod_slots[slot_idx].dest_idx);
+      if (strcmp(param_name, "amount") == 0)
+        return snprintf(buf, buf_len, "%.4f", inst->mod_slots[slot_idx].amount);
+    }
+  }
+
   if (strcmp(key, "jump_to_category") == 0) {
     int cur_cat = 0;
     for (int i = 0; i < (int)inst->categories.size(); ++i) {
@@ -2128,7 +2803,16 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
     if (inst->current_preset >= 0 && inst->current_preset < inst->preset_count) {
       return snprintf(buf, buf_len, "%s", inst->patches[inst->current_preset].category.c_str());
     }
-    return snprintf(buf, buf_len, "Helm-Factory");
+    return snprintf(buf, buf_len, "Vial-Factory");
+  }
+
+  if (strcmp(key, "preset_list") == 0 && inst->presets_index_json) {
+    int len = (int)strlen(inst->presets_index_json);
+    if (len < buf_len) {
+      strcpy(buf, inst->presets_index_json);
+      return len;
+    }
+    return -1;
   }
 
   if (strcmp(key, "category_list") == 0) {

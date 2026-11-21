@@ -66,6 +66,11 @@ cat src/module.json > dist/vial/module.json
 [ -f LICENSE ] && cat LICENSE > dist/vial/LICENSE
 [ -f NOTICE ]  && cat NOTICE  > dist/vial/NOTICE
 cat src/ui.js > dist/vial/ui.js
+[ -f src/web_ui.html ] && cat src/web_ui.html > dist/vial/web_ui.html
+if [ -d "src/assets" ]; then
+    rm -rf dist/vial/assets
+    cp -r src/assets dist/vial/assets
+fi
 cat build/dsp.so > dist/vial/dsp.so
 chmod +x dist/vial/dsp.so
 

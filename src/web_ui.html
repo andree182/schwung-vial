@@ -1,0 +1,1475 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Vial — Polyphonic Wavetable Synth</title>
+<script src="/static/schwung-remote-api.js"></script>
+<style>
+:root {
+  color-scheme: dark;
+  --bg: #0b0e12;
+  --panel: #12171e;
+  --panel-2: #181f28;
+  --raised: #202936;
+  --line: #283342;
+  --line-2: #374659;
+  --text: #e6edf3;
+  --dim: #8b99a8;
+  --faint: #596775;
+  --accent: #5fe0bf;
+  --accent-2: #7aa7ff;
+  --accent-3: #f2b85c;
+  --accent-4: #bd8bff;
+  --danger: #ff6b6b;
+  --radius: 10px;
+  --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 13px/1.38 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+button, select, input { font: inherit; color: inherit; }
+button { cursor: pointer; }
+
+/* Sticky Top Header */
+.top {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 10px 16px;
+  background: rgba(11, 14, 18, 0.94);
+  border-bottom: 1px solid var(--line);
+  backdrop-filter: blur(12px);
+}
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.brand-mark {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  color: var(--accent);
+  border: 1px solid rgba(95, 224, 191, 0.45);
+  background: rgba(95, 224, 191, 0.12);
+  font-weight: 800;
+  font-size: 16px;
+}
+.brand-text {
+  display: flex;
+  flex-direction: column;
+}
+.brand-name {
+  font-weight: 800;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  font-size: 12px;
+}
+.brand-sub {
+  font-size: 10px;
+  color: var(--dim);
+}
+.conn-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 99px;
+  font-size: 11px;
+  font-weight: 600;
+  background: rgba(95, 224, 191, 0.12);
+  border: 1px solid rgba(95, 224, 191, 0.4);
+  color: var(--accent);
+}
+.conn-badge.offline {
+  background: rgba(255, 107, 107, 0.12);
+  border-color: rgba(255, 107, 107, 0.4);
+  color: var(--danger);
+}
+.conn-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+  box-shadow: 0 0 6px currentColor;
+}
+
+/* Preset Bar */
+.preset-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1 1 360px;
+  min-width: 260px;
+}
+.icon-btn {
+  min-width: 32px;
+  height: 32px;
+  padding: 0 8px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+  color: var(--dim);
+  font-size: 15px;
+  font-weight: 600;
+}
+.icon-btn:hover:not(:disabled) {
+  color: var(--text);
+  border-color: var(--line-2);
+  background: var(--raised);
+}
+.preset-box {
+  flex: 1;
+  min-width: 140px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  height: 32px;
+  padding: 0 12px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+  cursor: pointer;
+}
+.preset-box:hover {
+  border-color: var(--accent);
+}
+.preset-title {
+  font-weight: 650;
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.preset-cat-badge {
+  font: 10px/1.3 var(--mono);
+  padding: 2px 6px;
+  border-radius: 5px;
+  background: var(--raised);
+  color: var(--accent);
+  white-space: nowrap;
+}
+
+.top-tools {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-left: auto;
+  flex-wrap: wrap;
+}
+.top-ctl {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 4px 8px;
+  height: 32px;
+}
+.top-ctl label {
+  font-size: 11px;
+  color: var(--dim);
+  font-weight: 600;
+}
+.top-ctl input[type="range"] {
+  width: 72px;
+  accent-color: var(--accent);
+}
+.top-ctl select {
+  background: transparent;
+  border: none;
+  color: var(--text);
+  font-weight: 600;
+  outline: none;
+}
+.top-val {
+  font: 11px var(--mono);
+  color: var(--accent);
+  min-width: 34px;
+  text-align: right;
+}
+
+/* Navigation Tabs */
+.nav-tabs {
+  display: flex;
+  gap: 6px;
+  padding: 10px 16px 0;
+  max-width: 1680px;
+  margin: 0 auto;
+  flex-wrap: wrap;
+}
+.tab-btn {
+  padding: 7px 14px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--dim);
+  font-weight: 650;
+  font-size: 12px;
+  transition: all 0.12s;
+}
+.tab-btn:hover {
+  color: var(--text);
+  border-color: var(--line-2);
+}
+.tab-btn.active {
+  color: var(--bg);
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+/* Main Grid */
+.grid {
+  display: grid;
+  gap: 12px;
+  padding: 12px 16px 28px;
+  max-width: 1680px;
+  margin: 0 auto;
+  grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+}
+.span-all {
+  grid-column: 1 / -1;
+}
+
+/* Cards */
+.card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--line);
+}
+.card-title {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 750;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--accent);
+}
+.card.osc2 .card-title { color: var(--accent-2); }
+.card.osc3 .card-title { color: var(--accent-3); }
+.card.mod .card-title  { color: var(--accent-4); }
+
+/* Pill Toggle */
+.pill-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border-radius: 99px;
+  border: 1px solid var(--line-2);
+  background: var(--panel-2);
+  color: var(--dim);
+  font-size: 11px;
+  font-weight: 700;
+}
+.pill-toggle.on {
+  background: rgba(95, 224, 191, 0.16);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.pill-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+/* Wavetable Picker Row & Canvas */
+.wt-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.wt-select {
+  flex: 1;
+  height: 30px;
+  padding: 0 10px;
+  border-radius: 7px;
+  border: 1px solid var(--line-2);
+  background: var(--panel-2);
+  color: var(--text);
+  font-weight: 600;
+}
+.wave-canvas {
+  width: 100%;
+  height: 76px;
+  border-radius: 8px;
+  background: #0d1218;
+  border: 1px solid var(--line);
+  display: block;
+}
+
+/* Parameter Rows */
+.param-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 12px;
+}
+.param-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.param-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 4px;
+}
+.param-label {
+  font-size: 11px;
+  color: var(--dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.param-val {
+  font: 11px var(--mono);
+  color: var(--text);
+}
+.param-cell input[type="range"] {
+  width: 100%;
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+.param-cell select {
+  height: 27px;
+  padding: 0 6px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+  color: var(--text);
+  font-size: 12px;
+}
+
+/* Group Subheaders */
+.sub-title {
+  margin: 4px 0 0;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--dim);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+/* Modulation Matrix Table */
+.mod-table {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.mod-row {
+  display: grid;
+  grid-template-columns: 54px 1.1fr 1.4fr 1.4fr 54px;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+}
+.mod-row.disabled {
+  opacity: 0.55;
+}
+.mod-row select {
+  height: 28px;
+  padding: 0 8px;
+  border-radius: 6px;
+  border: 1px solid var(--line-2);
+  background: var(--panel);
+  color: var(--text);
+  width: 100%;
+}
+.mod-row input[type="range"] {
+  width: 100%;
+  accent-color: var(--accent-4);
+}
+.mod-amt {
+  font: 11px var(--mono);
+  text-align: right;
+  color: var(--accent-4);
+}
+@media (max-width: 680px) {
+  .mod-row {
+    grid-template-columns: 52px 1fr 1fr;
+  }
+  .mod-row .mod-slider-wrap {
+    grid-column: 1 / -2;
+  }
+}
+
+/* Preset Browser Modal */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  background: rgba(5, 8, 11, 0.78);
+  backdrop-filter: blur(6px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+.modal {
+  width: 100%;
+  max-width: 780px;
+  max-height: 82vh;
+  background: var(--panel);
+  border: 1px solid var(--line-2);
+  border-radius: 14px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.65);
+}
+.modal-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--line);
+  flex-wrap: wrap;
+}
+.modal-search {
+  flex: 1;
+  min-width: 180px;
+  height: 34px;
+  padding: 0 12px;
+  border-radius: 8px;
+  border: 1px solid var(--line-2);
+  background: var(--panel-2);
+}
+.modal-cat {
+  height: 34px;
+  padding: 0 10px;
+  border-radius: 8px;
+  border: 1px solid var(--line-2);
+  background: var(--panel-2);
+}
+.modal-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 6px;
+}
+.preset-item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+  text-align: left;
+}
+.preset-item:hover {
+  border-color: var(--line-2);
+  background: var(--raised);
+}
+.preset-item.active {
+  border-color: var(--accent);
+  background: rgba(95, 224, 191, 0.14);
+}
+.preset-item-name {
+  font-weight: 650;
+  font-size: 12.5px;
+  width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.preset-item-cat {
+  font: 10px var(--mono);
+  color: var(--dim);
+}
+</style>
+</head>
+<body>
+
+<header class="top">
+  <div class="brand">
+    <div class="brand-mark">V</div>
+    <div class="brand-text">
+      <span class="brand-name">Vial</span>
+      <span class="brand-sub">Wavetable Synth</span>
+    </div>
+  </div>
+
+  <div id="conn-badge" class="conn-badge">
+    <span class="conn-dot"></span>
+    <span id="conn-text">Live</span>
+  </div>
+
+  <div class="preset-bar">
+    <button type="button" class="icon-btn" id="btn-prev-preset" title="Previous Preset">‹</button>
+    <button type="button" class="preset-box" id="btn-open-presets" title="Browse All Presets">
+      <span class="preset-title" id="lbl-preset-name">Move Organ</span>
+      <span class="preset-cat-badge" id="lbl-bank-name">Vial-Factory</span>
+    </button>
+    <button type="button" class="icon-btn" id="btn-next-preset" title="Next Preset">›</button>
+  </div>
+
+  <div class="top-tools">
+    <div class="top-ctl">
+      <label for="ctl-octave">Oct</label>
+      <select id="ctl-octave" data-param="octave_transpose">
+        <option value="-3">-3</option>
+        <option value="-2">-2</option>
+        <option value="-1">-1</option>
+        <option value="0" selected>0</option>
+        <option value="1">+1</option>
+        <option value="2">+2</option>
+        <option value="3">+3</option>
+      </select>
+    </div>
+    <div class="top-ctl">
+      <label for="ctl-volume">Vol</label>
+      <input type="range" id="ctl-volume" data-param="volume" min="0" max="1" step="0.01" value="0.8">
+      <span class="top-val" id="val-volume">80%</span>
+    </div>
+    <div class="top-ctl">
+      <label for="ctl-bpm">BPM</label>
+      <input type="range" id="ctl-bpm" data-param="bpm" min="40" max="240" step="1" value="120">
+      <span class="top-val" id="val-bpm">120</span>
+    </div>
+    <button type="button" class="icon-btn" id="btn-panic" title="All Notes Off">Panic</button>
+  </div>
+</header>
+
+<nav class="nav-tabs" id="nav-tabs">
+  <button type="button" class="tab-btn active" data-tab="all">All Panels</button>
+  <button type="button" class="tab-btn" data-tab="voice">Oscillators &amp; Filters</button>
+  <button type="button" class="tab-btn" data-tab="mod">Envelopes · LFOs · Matrix</button>
+  <button type="button" class="tab-btn" data-tab="fx">Effects &amp; Engine</button>
+</nav>
+
+<main class="grid" id="main-grid"></main>
+
+<!-- Preset Browser Modal -->
+<div class="modal-backdrop" id="preset-modal" hidden>
+  <div class="modal">
+    <div class="modal-head">
+      <input type="search" class="modal-search" id="preset-search" placeholder="Search presets (Vial, Helm, Surge)…">
+      <select class="modal-cat" id="preset-cat-filter">
+        <option value="">All Categories</option>
+      </select>
+      <button type="button" class="icon-btn" id="btn-close-modal">✕</button>
+    </div>
+    <div class="modal-list" id="preset-list"></div>
+  </div>
+</div>
+
+<script>
+(() => {
+  /* =====================================================================
+   * Option lists matching src/dsp/vial_plugin.cpp
+   * ===================================================================== */
+  const WAVETABLE_OPTIONS = [
+    "Preset",
+    "Vial Sin", "Vial Sat Sin", "Vial Triangle", "Vial Square", "Vial Pulse", "Vial Saw",
+    "Basic", "Pulse", "Resonant", "Resonant 2", "Sync", "Formant A", "Formant B",
+    "Harmonic", "Odd", "Bell", "Organ", "Digital", "Noise", "PWM Saw", "Fold",
+    "Steps", "Strings", "Brass", "Bass Spectra", "Choir", "Glass", "Chaos",
+    "Comb", "PhaseDist", "Fractal", "Upper", "Clav", "Breath", "SqSync", "Metal",
+    "Stack", "Granite", "Cello", "Violin", "Voice", "EPiano", "Clavinet",
+    "E-Organ", "FM", "Chip", "VGame", "Sax", "Flute", "Overtone", "Crushed",
+    "Granular", "Upright", "Piano", "Even", "Partials", "Feedback", "Window",
+    "Rave", "Octaves", "Logic", "Reed", "Pluck", "Sweep", "Chord", "Vosim",
+    "Scanned", "Prime", "SineSync", "Mallet", "Mixer", "Sub", "Notch", "Drive",
+    "E-Bass", "E-Guitar", "Distorted", "Theremin", "Raw", "Drawn"
+  ];
+
+  const LFO_SHAPE_OPTIONS = [
+    "Preset", "Triangle", "Sine", "Saw Up", "Saw Down", "Square", "Ramp"
+  ];
+
+  const MOD_SOURCES = [
+    "none",
+    "env_1", "env_2", "env_3",
+    "lfo_1", "lfo_2", "lfo_3",
+    "velocity", "aftertouch", "mod_wheel", "pitch_wheel", "note",
+    "macro_control_1", "macro_control_2", "macro_control_3", "macro_control_4"
+  ];
+
+  const MOD_DESTINATIONS = [
+    "filter_1_cutoff", "filter_1_resonance", "filter_1_drive", "filter_1_blend",
+    "filter_2_cutoff", "filter_2_resonance",
+    "osc_1_level", "osc_1_transpose", "osc_1_tune", "osc_1_pan",
+    "osc_1_wave_frame", "osc_1_unison_detune", "osc_1_distortion_amount", "osc_1_spectral_morph_amount",
+    "osc_2_level", "osc_2_transpose", "osc_2_tune", "osc_2_pan",
+    "osc_2_wave_frame", "osc_2_unison_detune", "osc_2_distortion_amount", "osc_2_spectral_morph_amount",
+    "osc_3_level", "osc_3_transpose", "osc_3_tune", "osc_3_wave_frame",
+    "sample_level", "volume", "voice_tune",
+    "lfo_1_frequency", "lfo_2_frequency",
+    "delay_dry_wet", "delay_feedback",
+    "reverb_dry_wet", "reverb_decay_time",
+    "chorus_dry_wet", "distortion_drive"
+  ];
+
+  const OSC_DIST_TYPES = [
+    "None", "Sync", "Formant", "Quantize", "Bend", "Squeeze", "Pulse Width",
+    "FM <- Osc", "FM <- Osc B", "FM <- Sample", "RM <- Osc", "RM <- Osc B", "RM <- Sample"
+  ];
+  const OSC_MORPH_TYPES = [
+    "None", "Vocode", "Formant Scale", "Harmonic Stretch", "Inharmonic", "Smear",
+    "Random Amplitudes", "Low Pass", "High Pass", "Phase Disperse", "Shepard Tone", "Skew"
+  ];
+  const OSC_DEST_TYPES = [
+    "Filter 1", "Filter 2", "Filter 1+2", "Effects", "Direct Out"
+  ];
+  const FILTER_MODELS = [
+    "Analog", "Dirty", "Ladder", "Digital", "Diode", "Formant", "Comb", "Phaser"
+  ];
+  const FILTER_STYLES = [
+    "12 dB", "24 dB", "NotchBlend", "NotchSpread", "B.P.N."
+  ];
+  const LFO_SYNC_MODES = ["Seconds", "Tempo", "Dotted", "Triplets"];
+  const LFO_SYNC_TYPES = ["Trigger", "Sync", "Envelope", "Sustain Env", "Loop Point", "Loop Hold"];
+  const TEMPO_DIVS = ["Freeze", "32/1", "16/1", "8/1", "4/1", "2/1", "1/1", "1/2", "1/4", "1/8", "1/16", "1/32", "1/64"];
+  const DIST_TYPES = ["Soft Clip", "Hard Clip", "Linear Fold", "Sin Fold", "Bit Crush", "Down Sample"];
+  const DELAY_STYLES = ["Mono", "Stereo", "Ping Pong", "Mid Ping Pong"];
+  const OVERSAMPLING_OPTS = ["1x (Draft)", "2x", "4x", "8x"];
+
+  /* =====================================================================
+   * Store & Schwung Remote Bridge (throttled writes + echo hold)
+   * ===================================================================== */
+  const WRITE_MS = 34;
+  const ECHO_HOLD_MS = 300;
+  const remote = window.schwungRemote || null;
+  const prefix = ((remote && remote.component) || "synth") + ":";
+
+  const state = Object.create(null);
+  const timers = Object.create(null);
+  const lastSent = Object.create(null);
+  const holdUntil = Object.create(null);
+  const listeners = new Map();
+  const canvasUpdaters = [];
+
+  const connBadge = document.getElementById("conn-badge");
+  const connText = document.getElementById("conn-text");
+  if (!remote || window.self === window.top) {
+    connBadge.classList.add("offline");
+    connText.textContent = "Offline";
+  }
+
+  function bind(key, fn) {
+    if (!listeners.has(key)) listeners.set(key, new Set());
+    listeners.get(key).add(fn);
+  }
+
+  function notifyKey(key) {
+    const set = listeners.get(key);
+    if (set) {
+      for (const fn of set) fn(state[key]);
+    }
+  }
+
+  function sendNow(key, val) {
+    if (remote) remote.setParam(prefix + key, String(val));
+  }
+
+  function setParam(key, val, immediate = false) {
+    state[key] = String(val);
+    notifyKey(key);
+    for (const fn of canvasUpdaters) fn();
+
+    if (immediate) {
+      holdUntil[key] = performance.now() + ECHO_HOLD_MS;
+      sendNow(key, val);
+      return;
+    }
+
+    const flush = () => {
+      delete timers[key];
+      const now = performance.now();
+      lastSent[key] = now;
+      holdUntil[key] = now + ECHO_HOLD_MS;
+      sendNow(key, state[key]);
+    };
+    if (timers[key] !== undefined) return;
+    const wait = WRITE_MS - (performance.now() - (lastSent[key] ?? -Infinity));
+    if (wait <= 0) flush();
+    else timers[key] = setTimeout(flush, wait);
+  }
+
+  if (remote) {
+    remote.onParamChange((params) => {
+      const now = performance.now();
+      let changed = false;
+      for (const full in params) {
+        if (!full.startsWith(prefix) && full.includes(":")) continue;
+        const key = full.startsWith(prefix) ? full.slice(prefix.length) : full;
+        if (timers[key] !== undefined || now < (holdUntil[key] ?? -Infinity)) continue;
+        const val = String(params[full]);
+        if (state[key] !== val) {
+          state[key] = val;
+          notifyKey(key);
+          changed = true;
+        }
+      }
+      if (changed) {
+        for (const fn of canvasUpdaters) fn();
+      }
+    });
+  }
+
+  /* =====================================================================
+   * UI Builder Helpers
+   * ===================================================================== */
+  function el(tag, cls, text) {
+    const e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text !== undefined) e.textContent = text;
+    return e;
+  }
+
+  function formatParam(val, spec) {
+    const n = parseFloat(val);
+    if (!Number.isFinite(n)) return "—";
+    if (spec.unit === "%") return Math.round(n * 100) + "%";
+    if (spec.unit === "st") return (n >= 0 ? "+" : "") + Math.round(n) + " st";
+    if (spec.unit === "dB") return n.toFixed(1) + " dB";
+    if (spec.type === "int") return String(Math.round(n));
+    return n.toFixed(spec.digits ?? 2);
+  }
+
+  function makeToggle(key, label = "On") {
+    const btn = el("button", "pill-toggle");
+    btn.type = "button";
+    const dot = el("span", "pill-dot");
+    const txt = el("span", "", label);
+    btn.append(dot, txt);
+    const update = (v) => {
+      const on = parseFloat(v) >= 0.5;
+      btn.classList.toggle("on", on);
+      txt.textContent = on ? "On" : "Off";
+    };
+    btn.onclick = () => {
+      const on = parseFloat(state[key] || "0") >= 0.5;
+      setParam(key, on ? 0 : 1, true);
+    };
+    bind(key, update);
+    update(state[key] ?? "0");
+    return btn;
+  }
+
+  function makeParamCell(spec) {
+    const cell = el("div", "param-cell");
+    const top = el("div", "param-top");
+    const lbl = el("span", "param-label", spec.label);
+    top.appendChild(lbl);
+
+    if (spec.options) {
+      const sel = el("select");
+      spec.options.forEach((opt, idx) => {
+        const o = el("option", "", opt);
+        o.value = String(idx);
+        sel.appendChild(o);
+      });
+      sel.onchange = () => setParam(spec.key, sel.value, true);
+      bind(spec.key, (v) => {
+        const idx = Math.round(parseFloat(v));
+        if (Number.isFinite(idx)) sel.value = String(idx);
+      });
+      cell.append(top, sel);
+    } else {
+      const valSpan = el("span", "param-val", formatParam(spec.def ?? 0, spec));
+      top.appendChild(valSpan);
+      const input = el("input");
+      input.type = "range";
+      input.min = String(spec.min ?? 0);
+      input.max = String(spec.max ?? 1);
+      input.step = String(spec.step ?? (spec.type === "int" ? 1 : ((spec.max - spec.min) / 200)));
+      input.value = String(spec.def ?? 0);
+      input.oninput = () => {
+        valSpan.textContent = formatParam(input.value, spec);
+        setParam(spec.key, input.value);
+      };
+      if (spec.def !== undefined) {
+        input.ondblclick = () => {
+          input.value = String(spec.def);
+          valSpan.textContent = formatParam(spec.def, spec);
+          setParam(spec.key, spec.def, true);
+        };
+      }
+      bind(spec.key, (v) => {
+        const n = parseFloat(v);
+        if (Number.isFinite(n)) {
+          input.value = String(n);
+          valSpan.textContent = formatParam(n, spec);
+        }
+      });
+      cell.append(top, input);
+    }
+    return cell;
+  }
+
+  function makeParamGrid(specs) {
+    const g = el("div", "param-grid");
+    for (const s of specs) g.appendChild(makeParamCell(s));
+    return g;
+  }
+
+  /* =====================================================================
+   * Wavetable Preview Loader (Amino NN.bin + Preset osc_waves.bin + Vial 1..6)
+   * ===================================================================== */
+  const aminoTableCache = new Map();
+  const aminoTableLoads = new Map();
+  let presetOscWaves = null; // Uint8Array(3 * 16 * 64)
+  let lastPresetWaveTag = null;
+
+  function loadAminoTable(tableIdx) {
+    if (aminoTableCache.has(tableIdx)) return aminoTableCache.get(tableIdx);
+    if (!aminoTableLoads.has(tableIdx)) {
+      const url = "assets/wave-previews/" + String(tableIdx).padStart(2, "0") + ".bin";
+      const p = fetch(url, { cache: "force-cache" })
+        .then((r) => (r.ok ? r.arrayBuffer() : null))
+        .then((buf) => {
+          if (buf && buf.byteLength >= 64 * 64) {
+            aminoTableCache.set(tableIdx, new Uint8Array(buf));
+            for (const fn of canvasUpdaters) fn();
+          }
+        })
+        .catch(() => { aminoTableLoads.delete(tableIdx); });
+      aminoTableLoads.set(tableIdx, p);
+    }
+    return null;
+  }
+
+  function refreshPresetOscWaves(tag) {
+    if (tag === lastPresetWaveTag) return;
+    lastPresetWaveTag = tag;
+    fetch("osc_waves.bin?t=" + encodeURIComponent(tag), { cache: "no-cache" })
+      .then((r) => (r.ok ? r.arrayBuffer() : null))
+      .then((buf) => {
+        if (buf && buf.byteLength >= 3 * 16 * 64) {
+          presetOscWaves = new Uint8Array(buf);
+          for (const fn of canvasUpdaters) fn();
+        }
+      })
+      .catch(() => {});
+  }
+
+  function samplePredefinedWave(shapeIdx, out64) {
+    for (let i = 0; i < 64; i++) {
+      const t = i / 64;
+      let y = 0;
+      if (shapeIdx === 1) y = Math.sin(t * Math.PI * 2); // Vial Sin
+      else if (shapeIdx === 2) y = Math.tanh(2.5 * Math.sin(t * Math.PI * 2)); // Vial Sat Sin
+      else if (shapeIdx === 3) y = t < 0.25 ? t * 4 : (t < 0.75 ? 2 - t * 4 : t * 4 - 4); // Triangle
+      else if (shapeIdx === 4) y = t < 0.5 ? 1 : -1; // Square
+      else if (shapeIdx === 5) y = t < 0.25 ? 1 : -1; // Pulse
+      else y = 1 - 2 * t; // Saw
+      out64[i] = y;
+    }
+  }
+
+  /* =====================================================================
+   * Card Builders
+   * ===================================================================== */
+  function buildOscCard(n) {
+    const p = `osc_${n}_`;
+    const card = el("section", `card osc${n}`);
+    card.dataset.section = "voice";
+
+    const head = el("div", "card-head");
+    head.append(el("h2", "card-title", `Oscillator ${n}`), makeToggle(p + "on"));
+    card.appendChild(head);
+
+    // Wavetable selector bar
+    const wtBar = el("div", "wt-bar");
+    const prevBtn = el("button", "icon-btn", "‹");
+    const nextBtn = el("button", "icon-btn", "›");
+    const wtSel = el("select", "wt-select");
+    WAVETABLE_OPTIONS.forEach((name, idx) => {
+      const opt = el("option", "", idx === 0 ? "0: Preset Wavetable" : `${idx}: ${name}`);
+      opt.value = String(idx);
+      wtSel.appendChild(opt);
+    });
+    wtSel.onchange = () => setParam(p + "wavetable", wtSel.value, true);
+    prevBtn.onclick = () => {
+      const cur = Math.max(0, (parseInt(wtSel.value, 10) || 0) - 1);
+      wtSel.value = String(cur);
+      setParam(p + "wavetable", cur, true);
+    };
+    nextBtn.onclick = () => {
+      const cur = Math.min(WAVETABLE_OPTIONS.length - 1, (parseInt(wtSel.value, 10) || 0) + 1);
+      wtSel.value = String(cur);
+      setParam(p + "wavetable", cur, true);
+    };
+    bind(p + "wavetable", (v) => {
+      const idx = Math.round(parseFloat(v));
+      if (Number.isFinite(idx)) wtSel.value = String(idx);
+    });
+    wtBar.append(prevBtn, wtSel, nextBtn);
+    card.appendChild(wtBar);
+
+    // Waveform visualizer canvas (real PCM from Amino NN.bin / Vial / Preset osc_waves.bin)
+    const canvas = el("canvas", "wave-canvas");
+    canvas.width = 320;
+    canvas.height = 84;
+    canvas.title = "Drag horizontally to scrub Wave Frame (0–255)";
+    canvas.style.cursor = "ew-resize";
+    card.appendChild(canvas);
+
+    // Drag horizontally on the waveform canvas to scrub wave_frame
+    let scrubbing = false;
+    const scrubAt = (e) => {
+      const rect = canvas.getBoundingClientRect();
+      const frac = Math.max(0, Math.min(1, (e.clientX - rect.left) / Math.max(1, rect.width)));
+      setParam(p + "wave_frame", Math.round(frac * 255));
+    };
+    canvas.addEventListener("pointerdown", (e) => {
+      scrubbing = true;
+      canvas.setPointerCapture(e.pointerId);
+      scrubAt(e);
+    });
+    canvas.addEventListener("pointermove", (e) => { if (scrubbing) scrubAt(e); });
+    canvas.addEventListener("pointerup", () => { scrubbing = false; });
+    canvas.addEventListener("pointercancel", () => { scrubbing = false; });
+
+    const colors = ["#5fe0bf", "#7aa7ff", "#f2b85c"];
+    const fillColors = ["rgba(95,224,191,0.14)", "rgba(122,167,255,0.14)", "rgba(242,184,92,0.14)"];
+    const color = colors[n - 1];
+    const fillColor = fillColors[n - 1];
+    const samples64 = new Float32Array(64);
+
+    const drawWave = () => {
+      const ctx = canvas.getContext("2d");
+      const W = canvas.width, H = canvas.height;
+      const mid = H / 2;
+      const amp = H * 0.39;
+      ctx.clearRect(0, 0, W, H);
+
+      // Centerline & subtle vertical grid
+      ctx.strokeStyle = "#1c2531";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(0, mid);
+      ctx.lineTo(W, mid);
+      for (let q = 1; q <= 3; q++) {
+        ctx.moveTo((W * q) / 4, 0);
+        ctx.lineTo((W * q) / 4, H);
+      }
+      ctx.stroke();
+
+      const on = parseFloat(state[p + "on"] ?? "1") >= 0.5;
+      const wt = Math.round(parseFloat(state[p + "wavetable"] || "0")) || 0;
+      const frameNorm = Math.max(0, Math.min(1, (parseFloat(state[p + "wave_frame"] || "0") || 0) / 255.0));
+
+      let tableBuf = null;
+      let numFrames = 1;
+      let baseOffset = 0;
+
+      if (wt >= 7 && wt < 7 + 74) {
+        tableBuf = loadAminoTable(wt - 7);
+        numFrames = 64;
+      } else if (wt === 0 && presetOscWaves) {
+        tableBuf = presetOscWaves;
+        numFrames = 16;
+        baseOffset = (n - 1) * 16 * 64;
+      }
+
+      if (tableBuf) {
+        // Draw subtle background terrain slices (4 evenly spaced frames)
+        ctx.strokeStyle = on ? "rgba(139,153,168,0.16)" : "rgba(76,89,104,0.10)";
+        ctx.lineWidth = 1;
+        for (let s = 0; s < 4; s++) {
+          const sf = Math.round((s * (numFrames - 1)) / 3);
+          const off = baseOffset + sf * 64;
+          const yShift = (s - 1.5) * 4.5;
+          ctx.beginPath();
+          for (let i = 0; i < 64; i++) {
+            const v = (tableBuf[off + i] - 128) / 127.0;
+            const x = (i / 63) * W;
+            const y = mid + yShift - v * (amp * 0.72);
+            if (i === 0) ctx.moveTo(x, y);
+            else ctx.lineTo(x, y);
+          }
+          ctx.stroke();
+        }
+
+        // Interpolate active frame
+        const fPos = frameNorm * (numFrames - 1);
+        const f0 = Math.floor(fPos);
+        const f1 = Math.min(numFrames - 1, f0 + 1);
+        const frac = fPos - f0;
+        const off0 = baseOffset + f0 * 64;
+        const off1 = baseOffset + f1 * 64;
+        for (let i = 0; i < 64; i++) {
+          const v0 = (tableBuf[off0 + i] - 128) / 127.0;
+          const v1 = (tableBuf[off1 + i] - 128) / 127.0;
+          samples64[i] = v0 + frac * (v1 - v0);
+        }
+      } else if (wt >= 1 && wt <= 6) {
+        samplePredefinedWave(wt, samples64);
+      } else {
+        samplePredefinedWave(1, samples64);
+      }
+
+      // Draw active waveform
+      ctx.beginPath();
+      for (let i = 0; i < 64; i++) {
+        const x = (i / 63) * W;
+        const y = mid - samples64[i] * amp;
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      }
+      ctx.strokeStyle = on ? color : "#4c5968";
+      ctx.lineWidth = 2;
+      ctx.stroke();
+
+      // Translucent fill to centerline
+      ctx.lineTo(W, mid);
+      ctx.lineTo(0, mid);
+      ctx.closePath();
+      ctx.fillStyle = on ? fillColor : "rgba(76,89,104,0.08)";
+      ctx.fill();
+    };
+    canvasUpdaters.push(drawWave);
+
+    card.appendChild(makeParamGrid([
+      { key: p + "wave_frame", label: "Wave Frame", min: 0, max: 255, step: 1, def: 0, type: "int" },
+      { key: p + "level", label: "Level", min: 0, max: 1, def: 0.707, unit: "%" },
+      { key: p + "transpose", label: "Transpose", min: -48, max: 48, step: 1, def: 0, type: "int", unit: "st" },
+      { key: p + "tune", label: "Fine Tune", min: -1, max: 1, def: 0 },
+      { key: p + "unison_voices", label: "Unison Voices", min: 1, max: 16, step: 1, def: 1, type: "int" },
+      { key: p + "unison_detune", label: "Unison Detune", min: 0, max: 10, def: 1.5 },
+      { key: p + "pan", label: "Pan", min: -1, max: 1, def: 0 },
+      { key: p + "destination", label: "Route To", options: OSC_DEST_TYPES },
+      { key: p + "distortion_type", label: "Phase Warp", options: OSC_DIST_TYPES },
+      { key: p + "distortion_amount", label: "Warp Amount", min: 0, max: 1, def: 0.5, unit: "%" },
+      { key: p + "spectral_morph_type", label: "Spectral Morph", options: OSC_MORPH_TYPES },
+      { key: p + "spectral_morph_amount", label: "Morph Amount", min: 0, max: 1, def: 0.5, unit: "%" }
+    ]));
+
+    return card;
+  }
+
+  function buildFilterSamplerCard() {
+    const card = el("section", "card");
+    card.dataset.section = "voice";
+
+    const head = el("div", "card-head");
+    head.append(el("h2", "card-title", "Filters 1 & 2 · Sampler"), makeToggle("filter_1_on"));
+    card.appendChild(head);
+
+    card.appendChild(el("div", "sub-title", "Filter 1"));
+    card.appendChild(makeParamGrid([
+      { key: "filter_1_model", label: "Model", options: FILTER_MODELS },
+      { key: "filter_1_style", label: "Style", options: FILTER_STYLES },
+      { key: "filter_1_cutoff", label: "Cutoff (MIDI)", min: 8, max: 136, def: 60 },
+      { key: "filter_1_resonance", label: "Resonance", min: 0, max: 1, def: 0.25, unit: "%" },
+      { key: "filter_1_drive", label: "Drive", min: 0, max: 20, def: 0, unit: "dB" },
+      { key: "filter_1_blend", label: "LP · BP · HP", min: 0, max: 2, def: 0 },
+      { key: "filter_1_keytrack", label: "Keytrack", min: -1, max: 1, def: 0 },
+      { key: "filter_1_mix", label: "Mix", min: 0, max: 1, def: 1, unit: "%" }
+    ]));
+
+    const f2Head = el("div", "card-head");
+    f2Head.style.marginTop = "6px";
+    f2Head.append(el("div", "sub-title", "Filter 2"), makeToggle("filter_2_on"));
+    card.appendChild(f2Head);
+    card.appendChild(makeParamGrid([
+      { key: "filter_2_model", label: "Model", options: FILTER_MODELS },
+      { key: "filter_2_style", label: "Style", options: FILTER_STYLES },
+      { key: "filter_2_cutoff", label: "Cutoff (MIDI)", min: 8, max: 136, def: 60 },
+      { key: "filter_2_resonance", label: "Resonance", min: 0, max: 1, def: 0.25, unit: "%" },
+      { key: "filter_2_drive", label: "Drive", min: 0, max: 20, def: 0, unit: "dB" },
+      { key: "filter_2_blend", label: "LP · BP · HP", min: 0, max: 2, def: 0 }
+    ]));
+
+    const smpHead = el("div", "card-head");
+    smpHead.style.marginTop = "6px";
+    smpHead.append(el("div", "sub-title", "Sampler / Noise"), makeToggle("sample_on"));
+    card.appendChild(smpHead);
+    card.appendChild(makeParamGrid([
+      { key: "sample_level", label: "Level", min: 0, max: 1, def: 0.5, unit: "%" },
+      { key: "sample_transpose", label: "Transpose", min: -48, max: 48, step: 1, def: 0, type: "int", unit: "st" },
+      { key: "sample_pan", label: "Pan", min: -1, max: 1, def: 0 },
+      { key: "sample_destination", label: "Route To", options: OSC_DEST_TYPES }
+    ]));
+
+    return card;
+  }
+
+  function buildEnvLfoCard() {
+    const card = el("section", "card");
+    card.dataset.section = "mod";
+    const head = el("div", "card-head");
+    head.appendChild(el("h2", "card-title", "Envelopes 1–3 · LFOs 1–2 · Macros"));
+    card.appendChild(head);
+
+    const envNames = ["Env 1 (Amp)", "Env 2 (Filter)", "Env 3 (Mod)"];
+    for (let e = 1; e <= 3; e++) {
+      const p = `env_${e}_`;
+      card.appendChild(el("div", "sub-title", envNames[e - 1]));
+      card.appendChild(makeParamGrid([
+        { key: p + "attack", label: "Attack", min: 0, max: 2.3784, def: 0.15 },
+        { key: p + "decay", label: "Decay", min: 0, max: 2.3784, def: 1.0 },
+        { key: p + "sustain", label: "Sustain", min: 0, max: 1, def: 1.0, unit: "%" },
+        { key: p + "release", label: "Release", min: 0, max: 2.3784, def: 0.55 }
+      ]));
+    }
+
+    for (let l = 1; l <= 2; l++) {
+      const p = `lfo_${l}_`;
+      card.appendChild(el("div", "sub-title", `LFO ${l}`));
+      card.appendChild(makeParamGrid([
+        { key: p + "shape", label: "Waveform Shape", options: LFO_SHAPE_OPTIONS },
+        { key: p + "sync_type", label: "Trigger Mode", options: LFO_SYNC_TYPES },
+        { key: p + "frequency", label: "Rate (Hz log)", min: -7, max: 9, def: 1 },
+        { key: p + "sync", label: "Sync Mode", options: LFO_SYNC_MODES },
+        { key: p + "tempo", label: "Tempo Div", options: TEMPO_DIVS },
+        { key: p + "fade_time", label: "Fade In (s)", min: 0, max: 8, def: 0 }
+      ]));
+    }
+
+    card.appendChild(el("div", "sub-title", "Macros 1–4"));
+    card.appendChild(makeParamGrid([
+      { key: "macro_control_1", label: "Macro 1", min: 0, max: 1, def: 0, unit: "%" },
+      { key: "macro_control_2", label: "Macro 2", min: 0, max: 1, def: 0, unit: "%" },
+      { key: "macro_control_3", label: "Macro 3", min: 0, max: 1, def: 0, unit: "%" },
+      { key: "macro_control_4", label: "Macro 4", min: 0, max: 1, def: 0, unit: "%" }
+    ]));
+
+    return card;
+  }
+
+  function buildModMatrixCard() {
+    const card = el("section", "card mod");
+    card.dataset.section = "mod";
+    const head = el("div", "card-head");
+    head.appendChild(el("h2", "card-title", "8-Slot Modulation Matrix"));
+    card.appendChild(head);
+
+    const table = el("div", "mod-table");
+    for (let i = 0; i < 8; i++) {
+      const p = `mod_${i}_`;
+      const row = el("div", "mod-row");
+
+      const enBtn = makeToggle(p + "enable", `#${i + 1}`);
+      const srcSel = el("select");
+      MOD_SOURCES.forEach((s, idx) => {
+        const o = el("option", "", s);
+        o.value = String(idx);
+        srcSel.appendChild(o);
+      });
+      const dstSel = el("select");
+      MOD_DESTINATIONS.forEach((d, idx) => {
+        const o = el("option", "", d);
+        o.value = String(idx);
+        dstSel.appendChild(o);
+      });
+
+      const sliderWrap = el("div", "mod-slider-wrap");
+      const amtSlider = el("input");
+      amtSlider.type = "range";
+      amtSlider.min = "-1";
+      amtSlider.max = "1";
+      amtSlider.step = "0.01";
+      amtSlider.value = "0";
+      sliderWrap.appendChild(amtSlider);
+
+      const amtTxt = el("span", "mod-amt", "0.00");
+
+      srcSel.onchange = () => {
+        setParam(p + "source", srcSel.value, true);
+        if (parseInt(srcSel.value, 10) > 0 && parseFloat(state[p + "enable"] || "0") < 0.5) {
+          setParam(p + "enable", 1, true);
+        }
+      };
+      dstSel.onchange = () => setParam(p + "dest", dstSel.value, true);
+      amtSlider.oninput = () => {
+        amtTxt.textContent = parseFloat(amtSlider.value).toFixed(2);
+        setParam(p + "amount", amtSlider.value);
+      };
+      amtSlider.ondblclick = () => {
+        amtSlider.value = "0";
+        amtTxt.textContent = "0.00";
+        setParam(p + "amount", 0, true);
+      };
+
+      bind(p + "enable", (v) => {
+        row.classList.toggle("disabled", parseFloat(v) < 0.5);
+      });
+      bind(p + "source", (v) => {
+        const idx = Math.round(parseFloat(v));
+        if (Number.isFinite(idx)) srcSel.value = String(idx);
+      });
+      bind(p + "dest", (v) => {
+        const idx = Math.round(parseFloat(v));
+        if (Number.isFinite(idx)) dstSel.value = String(idx);
+      });
+      bind(p + "amount", (v) => {
+        const n = parseFloat(v);
+        if (Number.isFinite(n)) {
+          amtSlider.value = String(n);
+          amtTxt.textContent = n.toFixed(2);
+        }
+      });
+
+      row.append(enBtn, srcSel, dstSel, sliderWrap, amtTxt);
+      table.appendChild(row);
+    }
+    card.appendChild(table);
+    return card;
+  }
+
+  function buildFxEngineCard() {
+    const card = el("section", "card span-all");
+    card.dataset.section = "fx";
+    const head = el("div", "card-head");
+    head.append(el("h2", "card-title", "Effects Rack & Move CPU / Engine"), makeToggle("fx_bypass", "Bypass FX"));
+    card.appendChild(head);
+
+    const fxBlocks = [
+      { title: "Chorus", on: "chorus_on", params: [
+        { key: "chorus_dry_wet", label: "Mix", min: 0, max: 1, def: 0.35, unit: "%" },
+        { key: "chorus_feedback", label: "Feedback", min: -0.95, max: 0.95, def: 0.3 },
+        { key: "chorus_mod_depth", label: "Depth", min: 0, max: 1, def: 0.5, unit: "%" },
+        { key: "chorus_frequency", label: "Rate", min: -6, max: 3, def: -2 }
+      ]},
+      { title: "Delay", on: "delay_on", params: [
+        { key: "delay_dry_wet", label: "Mix", min: 0, max: 1, def: 0.25, unit: "%" },
+        { key: "delay_feedback", label: "Feedback", min: -1, max: 1, def: 0.4 },
+        { key: "delay_style", label: "Style", options: DELAY_STYLES },
+        { key: "delay_tempo", label: "Tempo Div", options: TEMPO_DIVS }
+      ]},
+      { title: "Reverb", on: "reverb_on", params: [
+        { key: "reverb_dry_wet", label: "Mix", min: 0, max: 1, def: 0.25, unit: "%" },
+        { key: "reverb_decay_time", label: "Decay", min: -6, max: 6, def: 0 },
+        { key: "reverb_size", label: "Size", min: 0, max: 1, def: 0.5, unit: "%" },
+        { key: "reverb_high_shelf_gain", label: "High Damp", min: -24, max: 0, def: -6, unit: "dB" }
+      ]},
+      { title: "Distortion", on: "distortion_on", params: [
+        { key: "distortion_type", label: "Type", options: DIST_TYPES },
+        { key: "distortion_drive", label: "Drive", min: -30, max: 30, def: 0, unit: "dB" },
+        { key: "distortion_mix", label: "Mix", min: 0, max: 1, def: 1, unit: "%" }
+      ]},
+      { title: "Phaser & Flanger", on: "phaser_on", params: [
+        { key: "phaser_dry_wet", label: "Phaser Mix", min: 0, max: 1, def: 0.5, unit: "%" },
+        { key: "phaser_feedback", label: "Phaser FB", min: 0, max: 1, def: 0.5, unit: "%" },
+        { key: "flanger_on", label: "Flanger", options: ["Off", "On"] },
+        { key: "flanger_dry_wet", label: "Flanger Mix", min: 0, max: 1, def: 0.5, unit: "%" }
+      ]},
+      { title: "Move CPU & Voice Engine", on: "multi_core", params: [
+        { key: "oversampling", label: "Oversampling", options: OVERSAMPLING_OPTS },
+        { key: "fft_cache", label: "IFFT Spectrum Cache", options: ["Off", "On"] },
+        { key: "max_polyphony", label: "Max Polyphony", min: 1, max: 16, step: 1, def: 4, type: "int" },
+        { key: "max_unison", label: "Max Unison", min: 1, max: 16, step: 1, def: 3, type: "int" },
+        { key: "portamento_time", label: "Glide Time", min: -10, max: 4, def: -10 },
+        { key: "legato", label: "Legato", options: ["Off", "On"] },
+        { key: "pitch_bend_range", label: "Bend Range", min: 0, max: 48, step: 1, def: 2, type: "int", unit: "st" },
+        { key: "velocity_track", label: "Velocity Track", min: -1, max: 1, def: 0 }
+      ]}
+    ];
+
+    const subGrid = el("div", "param-grid");
+    for (const b of fxBlocks) {
+      const box = el("div", "card");
+      box.style.background = "var(--panel-2)";
+      const bh = el("div", "card-head");
+      bh.append(el("span", "sub-title", b.title), makeToggle(b.on));
+      box.append(bh, makeParamGrid(b.params));
+      subGrid.appendChild(box);
+    }
+    card.appendChild(subGrid);
+    return card;
+  }
+
+  /* Mount all cards */
+  const mainGrid = document.getElementById("main-grid");
+  mainGrid.append(
+    buildOscCard(1),
+    buildOscCard(2),
+    buildOscCard(3),
+    buildFilterSamplerCard(),
+    buildEnvLfoCard(),
+    buildModMatrixCard(),
+    buildFxEngineCard()
+  );
+
+  /* Tab switching */
+  document.getElementById("nav-tabs").addEventListener("click", (e) => {
+    const btn = e.target.closest(".tab-btn");
+    if (!btn) return;
+    document.querySelectorAll(".tab-btn").forEach((b) => b.classList.toggle("active", b === btn));
+    const tab = btn.dataset.tab;
+    document.querySelectorAll("#main-grid > .card").forEach((c) => {
+      c.hidden = (tab !== "all" && c.dataset.section !== tab);
+    });
+  });
+
+  /* Header bindings */
+  const lblPreset = document.getElementById("lbl-preset-name");
+  const lblBank = document.getElementById("lbl-bank-name");
+  bind("preset_name", (v) => { if (v) lblPreset.textContent = v; });
+  bind("bank_name", (v) => { if (v) lblBank.textContent = v; });
+
+  const octSel = document.getElementById("ctl-octave");
+  octSel.onchange = () => setParam("octave_transpose", octSel.value, true);
+  bind("octave_transpose", (v) => { octSel.value = String(Math.round(parseFloat(v) || 0)); });
+
+  const volInput = document.getElementById("ctl-volume");
+  const volVal = document.getElementById("val-volume");
+  volInput.oninput = () => {
+    volVal.textContent = Math.round(parseFloat(volInput.value) * 100) + "%";
+    setParam("volume", volInput.value);
+  };
+  bind("volume", (v) => {
+    const n = parseFloat(v);
+    if (Number.isFinite(n)) {
+      volInput.value = String(n);
+      volVal.textContent = Math.round(n * 100) + "%";
+    }
+  });
+
+  const bpmInput = document.getElementById("ctl-bpm");
+  const bpmVal = document.getElementById("val-bpm");
+  bpmInput.oninput = () => {
+    bpmVal.textContent = String(Math.round(parseFloat(bpmInput.value)));
+    setParam("bpm", bpmInput.value);
+  };
+  bind("bpm", (v) => {
+    const n = Math.round(parseFloat(v));
+    if (Number.isFinite(n)) {
+      bpmInput.value = String(n);
+      bpmVal.textContent = String(n);
+    }
+  });
+
+  document.getElementById("btn-panic").onclick = () => setParam("all_notes_off", 1, true);
+
+  /* =====================================================================
+   * Preset Library & Modal Browser
+   * ===================================================================== */
+  let presetLibrary = [];
+  const modal = document.getElementById("preset-modal");
+  const searchInput = document.getElementById("preset-search");
+  const catFilter = document.getElementById("preset-cat-filter");
+  const presetListEl = document.getElementById("preset-list");
+
+  function selectPresetIndex(idx) {
+    const count = parseInt(state.preset_count || String(presetLibrary.length), 10) || presetLibrary.length;
+    if (count <= 0) return;
+    const clamped = Math.max(0, Math.min(count - 1, idx));
+    setParam("preset", clamped, true);
+    const entry = presetLibrary[clamped];
+    if (entry) {
+      lblPreset.textContent = entry.name;
+      lblBank.textContent = entry.cat;
+    }
+    renderPresetModalList();
+  }
+
+  document.getElementById("btn-prev-preset").onclick = () => {
+    const cur = parseInt(state.preset || "0", 10) || 0;
+    selectPresetIndex(cur - 1);
+  };
+  document.getElementById("btn-next-preset").onclick = () => {
+    const cur = parseInt(state.preset || "0", 10) || 0;
+    selectPresetIndex(cur + 1);
+  };
+
+  function renderPresetModalList() {
+    if (modal.hidden) return;
+    const q = searchInput.value.trim().toLowerCase();
+    const cat = catFilter.value;
+    const cur = parseInt(state.preset || "0", 10);
+    presetListEl.textContent = "";
+    const frag = document.createDocumentFragment();
+    for (const p of presetLibrary) {
+      if (cat && p.cat !== cat) continue;
+      if (q && !p.name.toLowerCase().includes(q) && !p.cat.toLowerCase().includes(q)) continue;
+      const btn = el("button", "preset-item" + (p.i === cur ? " active" : ""));
+      btn.type = "button";
+      btn.append(el("span", "preset-item-name", p.name), el("span", "preset-item-cat", `${p.i}: ${p.cat}`));
+      btn.onclick = () => {
+        selectPresetIndex(p.i);
+        modal.hidden = true;
+      };
+      frag.appendChild(btn);
+    }
+    presetListEl.appendChild(frag);
+  }
+
+  document.getElementById("btn-open-presets").onclick = () => {
+    modal.hidden = false;
+    renderPresetModalList();
+    searchInput.focus();
+  };
+  document.getElementById("btn-close-modal").onclick = () => { modal.hidden = true; };
+  modal.onclick = (e) => { if (e.target === modal) modal.hidden = true; };
+  searchInput.oninput = renderPresetModalList;
+  catFilter.onchange = renderPresetModalList;
+
+  fetch("presets_index.json", { cache: "no-cache" })
+    .then((r) => (r.ok ? r.json() : null))
+    .then((data) => {
+      if (!data || !Array.isArray(data.presets)) return;
+      presetLibrary = data.presets;
+      const cats = Array.isArray(data.categories) ? data.categories : [];
+      for (const c of cats) {
+        const opt = el("option", "", c.name);
+        opt.value = c.name;
+        catFilter.appendChild(opt);
+      }
+      bind("preset", (v) => {
+        const idx = parseInt(v, 10);
+        if (Number.isFinite(idx) && presetLibrary[idx]) {
+          lblPreset.textContent = presetLibrary[idx].name;
+          lblBank.textContent = presetLibrary[idx].cat;
+        }
+      });
+    })
+    .catch(() => {});
+
+  bind("preset", (v) => {
+    const idx = parseInt(v, 10);
+    if (Number.isFinite(idx) && presetLibrary[idx]) {
+      lblPreset.textContent = presetLibrary[idx].name;
+      lblBank.textContent = presetLibrary[idx].cat;
+    }
+    setTimeout(() => refreshPresetOscWaves(String(v) + "_" + (state.preset_name || "")), 120);
+  });
+
+  // Initial preset wavetable fetch & canvas render
+  refreshPresetOscWaves("init");
+  for (const fn of canvasUpdaters) fn();
+})();
+</script>
+</body>
+</html>

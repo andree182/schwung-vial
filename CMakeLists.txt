@@ -74,6 +74,7 @@ set(VIAL_SOURCES
 # Move Anything DSP Plugin wrapper
 set(PLUGIN_SOURCES
     src/dsp/vial_plugin.cpp
+    src/dsp/amino_wavetables.c
 )
 
 # Combine all source files
